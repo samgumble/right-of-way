@@ -1,0 +1,557 @@
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
+import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, ECONOMY, GRID, PERMIT, SHADOW, STORM, TOWER_HEIGHT } from './constants';
+import { Grid, type GridNode } from './Grid';
+import { Tower, buildTowerVisual } from './Tower';
+import { Span } from './Span';
+import { IsoCameraRig } from './CameraRig';
+import { Economy } from './Economy';
+import { Hud } from './Hud';
+import { SoundManager } from './SoundManager';
+import { denyShakeOffset } from './feedback';
+import { clearSave, loadGame, saveGame, type SaveData } from './Persistence';
+
+const AUTOSAVE_INTERVAL_MS = 3000;
+
+interface SpanRecord {
+  span: Span;
+  a: Tower;
+  b: Tower;
+}
+
+function isValidGridNode(i: number, j: number): boolean {
+  return (
+    Number.isInteger(i) && Number.isInteger(j) && i >= 0 && i <= GRID.cells && j >= 0 && j <= GRID.cells
+  );
+}
+
+function findTowerRoot(obj: THREE.Object3D): THREE.Object3D | null {
+  let o: THREE.Object3D | null = obj;
+  while (o && !o.userData.isTower) o = o.parent;
+  return o;
+}
+
+function findSpanRoot(obj: THREE.Object3D): THREE.Object3D | null {
+  let o: THREE.Object3D | null = obj;
+  while (o && !o.userData.isSpan) o = o.parent;
+  return o;
+}
+
+function randomStormDelayMs(): number {
+  const span = STORM.maxIntervalSec - STORM.minIntervalSec;
+  return (STORM.minIntervalSec + Math.random() * span) * 1000;
+}
+
+export class Game {
+  private readonly scene = new THREE.Scene();
+  private readonly renderer: THREE.WebGLRenderer;
+  private readonly composer: EffectComposer;
+  private readonly cameraRig: IsoCameraRig;
+  private readonly grid = new Grid();
+  private readonly economy = new Economy();
+  private readonly hud: Hud;
+  private readonly sound = new SoundManager();
+  private readonly ambientLight: THREE.AmbientLight;
+  private readonly sunLight: THREE.DirectionalLight;
+  private readonly dayAmbientColor = new THREE.Color(COLORS.ambientLight);
+  private readonly nightAmbientColor = new THREE.Color(COLORS.steelBlueDim);
+
+  private readonly towers: Tower[] = [];
+  private readonly spans: SpanRecord[] = [];
+  private readonly spannedPairs = new Set<string>();
+  private selectedTower: Tower | null = null;
+
+  private readonly raycaster = new THREE.Raycaster();
+  private readonly pointerNdc = new THREE.Vector2();
+  private readonly ghost: THREE.Group;
+  private readonly ghostMaterial: THREE.MeshStandardMaterial;
+  private readonly ghostBasePos = new THREE.Vector3();
+  private ghostDenyStart: number | null = null;
+  private readonly container: HTMLElement;
+  private lastTick = performance.now();
+  private lastSave = performance.now();
+  private isResetting = false;
+  private nextStormAt = performance.now() + STORM.firstStrikeDelaySec * 1000;
+
+  constructor(container: HTMLElement) {
+    this.container = container;
+    this.scene.background = new THREE.Color(COLORS.background);
+
+    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setSize(container.clientWidth, container.clientHeight);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.VSMShadowMap;
+    container.appendChild(this.renderer.domElement);
+
+    this.cameraRig = new IsoCameraRig(this.renderer.domElement);
+    this.hud = new Hud(container);
+
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.cameraRig.camera));
+    const bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(container.clientWidth, container.clientHeight),
+      0.55,
+      0.4,
+      0.2,
+    );
+    this.composer.addPass(bloomPass);
+    this.composer.addPass(new OutputPass());
+    // Vignette must come after OutputPass: it mixes toward a plain SDR grey constant,
+    // which needs to happen in the final sRGB-encoded buffer, not the linear HDR one
+    // upstream — mixing in linear space made a near-black scene's corners read lighter
+    // than its center, the opposite of a vignette.
+    const vignettePass = new ShaderPass(VignetteShader);
+    vignettePass.uniforms.offset.value = ATMOSPHERE.vignetteOffset;
+    vignettePass.uniforms.darkness.value = ATMOSPHERE.vignetteDarkness;
+    this.composer.addPass(vignettePass);
+
+    this.scene.fog = new THREE.Fog(COLORS.background, ATMOSPHERE.fogNear, ATMOSPHERE.fogFar);
+
+    this.ambientLight = new THREE.AmbientLight(COLORS.ambientLight, ATMOSPHERE.dayAmbientIntensity);
+    this.scene.add(this.ambientLight);
+
+    this.sunLight = new THREE.DirectionalLight(COLORS.keyLight, ATMOSPHERE.dayKeyIntensity);
+    this.sunLight.position.set(30, 40, 15);
+    this.sunLight.castShadow = true;
+    this.sunLight.shadow.mapSize.set(SHADOW.mapSize, SHADOW.mapSize);
+    this.sunLight.shadow.bias = SHADOW.bias;
+    this.sunLight.shadow.normalBias = SHADOW.normalBias;
+    this.sunLight.shadow.radius = SHADOW.radius;
+    const shadowCam = this.sunLight.shadow.camera;
+    shadowCam.left = -SHADOW.frustumHalfExtent;
+    shadowCam.right = SHADOW.frustumHalfExtent;
+    shadowCam.top = SHADOW.frustumHalfExtent;
+    shadowCam.bottom = -SHADOW.frustumHalfExtent;
+    shadowCam.near = 1;
+    shadowCam.far = 150;
+    shadowCam.updateProjectionMatrix();
+    this.scene.add(this.sunLight);
+
+    this.scene.add(this.grid.group);
+
+    this.ghostMaterial = new THREE.MeshStandardMaterial({
+      color: COLORS.steelBlue,
+      transparent: true,
+      opacity: 0.35,
+      roughness: 0.5,
+      metalness: 0.4,
+    });
+    this.ghost = buildTowerVisual(this.ghostMaterial, TOWER_HEIGHT);
+    this.ghost.visible = false;
+    this.scene.add(this.ghost);
+
+    this.loadSavedGame();
+
+    this.bindInput();
+    window.addEventListener('resize', this.onResize);
+    document.addEventListener('visibilitychange', this.onVisibilityChange);
+    window.addEventListener('beforeunload', this.save);
+    this.renderer.setAnimationLoop(this.tick);
+  }
+
+  private bindInput(): void {
+    const el = this.renderer.domElement;
+    el.addEventListener('pointermove', this.onPointerMove);
+    el.addEventListener('click', this.onClick);
+    window.addEventListener('keydown', this.onKeyDown);
+    el.addEventListener('pointerdown', () => this.sound.unlock(), { once: true });
+  }
+
+  private updateNdc(e: MouseEvent): void {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.pointerNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointerNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  }
+
+  private raycastGroundNode(): GridNode | null {
+    this.raycaster.setFromCamera(this.pointerNdc, this.cameraRig.camera);
+    const hits = this.raycaster.intersectObject(this.grid.groundMesh);
+    if (!hits.length) return null;
+    return this.grid.nearestNode(hits[0].point);
+  }
+
+  private raycastTower(): Tower | null {
+    this.raycaster.setFromCamera(this.pointerNdc, this.cameraRig.camera);
+    const hits = this.raycaster.intersectObjects(
+      this.towers.map((t) => t.group),
+      true,
+    );
+    if (!hits.length) return null;
+    const root = findTowerRoot(hits[0].object);
+    return this.towers.find((t) => t.group === root) ?? null;
+  }
+
+  private raycastSpan(): SpanRecord | null {
+    this.raycaster.setFromCamera(this.pointerNdc, this.cameraRig.camera);
+    const hits = this.raycaster.intersectObjects(
+      this.spans.map(({ span }) => span.group),
+      true,
+    );
+    if (!hits.length) return null;
+    const root = findSpanRoot(hits[0].object);
+    return this.spans.find(({ span }) => span.group === root) ?? null;
+  }
+
+  private onPointerMove = (e: MouseEvent): void => {
+    this.updateNdc(e);
+    const node = this.raycastGroundNode();
+    if (node && this.grid.isBuildable(node.i, node.j)) {
+      this.ghostBasePos.copy(node.world);
+      this.ghost.visible = true;
+      const cost = Math.round(ECONOMY.towerCost * this.grid.towerCostMultiplier(node.i, node.j));
+      this.ghostMaterial.opacity = this.economy.canAfford(cost, 0) ? 0.35 : 0.15;
+    } else {
+      this.ghost.visible = false;
+    }
+  };
+
+  private onClick = (e: MouseEvent): void => {
+    this.updateNdc(e);
+
+    const tower = this.raycastTower();
+    if (tower) {
+      this.handleTowerClick(tower);
+      return;
+    }
+
+    const spanRecord = this.raycastSpan();
+    if (spanRecord) {
+      if (spanRecord.span.isFaulted()) this.tryRepairSpan(spanRecord);
+      return;
+    }
+
+    const node = this.raycastGroundNode();
+    if (node && this.grid.isBuildable(node.i, node.j)) {
+      const cost = Math.round(ECONOMY.towerCost * this.grid.towerCostMultiplier(node.i, node.j));
+      if (this.economy.canAfford(cost, 0)) {
+        this.economy.spend(cost, 0);
+        this.placeTower(node);
+        this.sound.playPlace();
+        this.save();
+      } else {
+        this.ghostDenyStart = performance.now();
+        this.sound.playDeny();
+      }
+      return;
+    }
+
+    this.deselect();
+  };
+
+  private onKeyDown = (e: KeyboardEvent): void => {
+    if (e.shiftKey && e.key.toLowerCase() === 'r') {
+      this.isResetting = true;
+      this.renderer.setAnimationLoop(null);
+      clearSave();
+      window.location.reload();
+      return;
+    }
+
+    if (e.key.toLowerCase() !== 'u' || !this.selectedTower) return;
+    const tower = this.selectedTower;
+
+    if (!tower.canUpgrade()) {
+      tower.denyFeedback();
+      this.sound.playDeny();
+      return;
+    }
+    const cost = ECONOMY.towerUpgradeCost[tower.getTier() - 1];
+    if (!this.economy.canAfford(cost.capEx, cost.crewHours)) {
+      tower.denyFeedback();
+      this.sound.playDeny();
+      return;
+    }
+    this.economy.spend(cost.capEx, cost.crewHours);
+    tower.upgrade();
+    this.sound.playUpgrade(tower.getTier());
+    this.save();
+  };
+
+  private onVisibilityChange = (): void => {
+    if (document.hidden) this.save();
+  };
+
+  private placeTower(node: GridNode): Tower {
+    this.grid.setOccupied(node.i, node.j);
+    const tower = new Tower(node.i, node.j, node.world, TOWER_HEIGHT, PERMIT.pendingDurationSec * 1000);
+    this.towers.push(tower);
+    this.scene.add(tower.group);
+    return tower;
+  }
+
+  private handleTowerClick(tower: Tower): void {
+    if (tower.isPending()) {
+      tower.denyFeedback();
+      this.sound.playDeny();
+      return;
+    }
+
+    if (this.selectedTower === tower) {
+      this.deselect();
+      return;
+    }
+
+    if (!this.selectedTower) {
+      this.selectedTower = tower;
+      tower.setSelected(true);
+      this.sound.playSelect();
+      return;
+    }
+
+    if (this.tryStringSpan(this.selectedTower, tower)) {
+      this.selectedTower.setSelected(false);
+      this.selectedTower = null;
+      this.save();
+    }
+  }
+
+  private tryStringSpan(a: Tower, b: Tower): boolean {
+    const key = [a.gridI, a.gridJ, b.gridI, b.gridJ].sort().join('|');
+    if (this.spannedPairs.has(key)) {
+      a.denyFeedback();
+      b.denyFeedback();
+      this.sound.playDeny();
+      return false;
+    }
+
+    if (!a.hasFreeCapacity()) {
+      a.denyFeedback();
+      this.sound.playDeny();
+      return false;
+    }
+    if (!b.hasFreeCapacity()) {
+      b.denyFeedback();
+      this.sound.playDeny();
+      return false;
+    }
+
+    const distance = a.topPos.distanceTo(b.topPos);
+    const crewCost = ECONOMY.spanCostBase + distance * ECONOMY.spanCostPerUnitDistance;
+    if (!this.economy.canAfford(0, crewCost)) {
+      a.denyFeedback();
+      b.denyFeedback();
+      this.sound.playDeny();
+      return false;
+    }
+
+    this.spannedPairs.add(key);
+    this.economy.spend(0, crewCost);
+    a.addConnection();
+    b.addConnection();
+
+    const span = new Span(a.topPos, b.topPos);
+    this.spans.push({ span, a, b });
+    this.scene.add(span.group);
+    return true;
+  }
+
+  private tryRepairSpan(record: SpanRecord): void {
+    const cost = STORM.repairCost;
+    if (!this.economy.canAfford(cost.capEx, cost.crewHours)) {
+      record.a.denyFeedback();
+      record.b.denyFeedback();
+      this.sound.playDeny();
+      return;
+    }
+    this.economy.spend(cost.capEx, cost.crewHours);
+    record.span.repair();
+    this.save();
+  }
+
+  private triggerStorm(now: number): void {
+    const candidates = this.spans.filter(({ span }) => span.isEnergized());
+    if (candidates.length >= STORM.minEnergizedSpansToStrike) {
+      const target = candidates[Math.floor(Math.random() * candidates.length)];
+      target.span.fault();
+      this.sound.playStormStrike();
+      this.save();
+    }
+    this.nextStormAt = now + randomStormDelayMs();
+  }
+
+  private deselect(): void {
+    if (this.selectedTower) {
+      this.selectedTower.setSelected(false);
+      this.selectedTower = null;
+    }
+  }
+
+  /** Slow day/night cycle: animates the existing ambient/key lights only — same hues,
+   * no new state, no gameplay coupling. Purely a background atmosphere cue. */
+  private updateAtmosphere(now: number): void {
+    const cyclePos = (now / 1000 / ATMOSPHERE.dayNightCycleSec) % 1;
+    const dayFactor = 0.5 + 0.5 * Math.cos(cyclePos * Math.PI * 2);
+    this.ambientLight.color.copy(this.nightAmbientColor).lerp(this.dayAmbientColor, dayFactor);
+    this.ambientLight.intensity = THREE.MathUtils.lerp(
+      ATMOSPHERE.nightAmbientIntensity,
+      ATMOSPHERE.dayAmbientIntensity,
+      dayFactor,
+    );
+    this.sunLight.intensity = THREE.MathUtils.lerp(ATMOSPHERE.nightKeyIntensity, ATMOSPHERE.dayKeyIntensity, dayFactor);
+  }
+
+  private updateGhost(now: number): void {
+    this.ghost.position.copy(this.ghostBasePos);
+    if (this.ghostDenyStart !== null) {
+      const elapsed = now - this.ghostDenyStart;
+      this.ghost.position.x += denyShakeOffset(elapsed);
+      if (elapsed >= DENY_SHAKE_DURATION_MS) this.ghostDenyStart = null;
+    }
+  }
+
+  /** Derived from current state, not stored — once you place two towers or string a
+   * span, the corresponding hint simply stops matching and never reappears. */
+  private computeOnboardingHint(): string {
+    if (this.selectedTower || this.spans.length > 0) return '';
+    if (this.towers.length === 0) return 'CLICK THE GRID TO PLACE YOUR FIRST TOWER';
+    if (this.towers.length === 1) return 'CLICK THE GRID AGAIN TO PLACE A SECOND TOWER';
+    return 'SELECT TWO TOWERS TO STRING A SPAN BETWEEN THEM';
+  }
+
+  private updateHud(): void {
+    let context = '';
+    if (this.selectedTower) {
+      const tower = this.selectedTower;
+      if (tower.canUpgrade()) {
+        const cost = ECONOMY.towerUpgradeCost[tower.getTier() - 1];
+        context = `TOWER T${tower.getTier()} SELECTED · [U] UPGRADE TO T${tower.getTier() + 1} — $${cost.capEx} / ${cost.crewHours}h`;
+      } else {
+        context = `TOWER T${tower.getTier()} SELECTED · MAX TIER`;
+      }
+    }
+    const faultCount = this.spans.reduce((count, { span }) => count + (span.isFaulted() ? 1 : 0), 0);
+    this.hud.update({
+      capEx: this.economy.capEx,
+      crewHours: this.economy.crewHours,
+      crewHoursMax: this.economy.crewHoursMax,
+      context,
+      faultCount,
+      repairCapEx: STORM.repairCost.capEx,
+      repairCrewHours: STORM.repairCost.crewHours,
+      hint: this.computeOnboardingHint(),
+    });
+  }
+
+  private save = (): void => {
+    if (this.isResetting) return;
+    const camera = this.cameraRig.getView();
+    saveGame({
+      capEx: this.economy.capEx,
+      crewHours: this.economy.crewHours,
+      towers: this.towers.map((t) => ({
+        i: t.gridI,
+        j: t.gridJ,
+        tier: t.getTier(),
+        pendingMs: t.getPendingRemainingMs() ?? undefined,
+      })),
+      spans: this.spans.map(({ a, b, span }) => ({
+        a: [a.gridI, a.gridJ] as [number, number],
+        b: [b.gridI, b.gridJ] as [number, number],
+        faulted: span.isFaulted(),
+      })),
+      camera,
+    });
+  };
+
+  private loadSavedGame(): void {
+    let data: SaveData | null = null;
+    try {
+      data = loadGame();
+    } catch {
+      data = null;
+    }
+    if (!data) return;
+
+    try {
+      this.economy.restore(data.capEx, data.crewHours);
+
+      const byKey = new Map<string, Tower>();
+      for (const t of data.towers) {
+        if (!isValidGridNode(t.i, t.j) || !Number.isFinite(t.tier)) continue;
+        const tier = Math.min(Math.max(1, Math.round(t.tier)), ECONOMY.towerMaxTier);
+
+        const pendingMs = Number.isFinite(t.pendingMs) && t.pendingMs! > 0 ? t.pendingMs : undefined;
+
+        const world = this.grid.nodeToWorld(t.i, t.j);
+        this.grid.setOccupied(t.i, t.j);
+        const tower = new Tower(t.i, t.j, world, TOWER_HEIGHT);
+        tower.materializeFromSave(tier, 0, pendingMs);
+        this.towers.push(tower);
+        this.scene.add(tower.group);
+        byKey.set(`${t.i},${t.j}`, tower);
+      }
+
+      for (const s of data.spans) {
+        const a = byKey.get(`${s.a[0]},${s.a[1]}`);
+        const b = byKey.get(`${s.b[0]},${s.b[1]}`);
+        if (!a || !b) continue;
+        a.addConnection();
+        b.addConnection();
+        const span = new Span(a.topPos, b.topPos);
+        span.materializeEnergized();
+        if (s.faulted) span.fault();
+        this.spans.push({ span, a, b });
+        this.scene.add(span.group);
+        this.spannedPairs.add([a.gridI, a.gridJ, b.gridI, b.gridJ].sort().join('|'));
+      }
+
+      if (data.camera) {
+        this.cameraRig.setView(data.camera.x, data.camera.z, data.camera.zoom);
+      }
+    } catch {
+      // Corrupted/incompatible save data — discard and continue with whatever loaded so far.
+      clearSave();
+    }
+  }
+
+  private tick = (): void => {
+    const now = performance.now();
+    const dt = Math.min((now - this.lastTick) / 1000, 0.25);
+    this.lastTick = now;
+
+    this.cameraRig.update();
+    this.updateAtmosphere(now);
+
+    for (const tower of this.towers) {
+      const event = tower.update(now);
+      if (event === 'permitCleared') this.sound.playPermitClear();
+    }
+
+    let energizedCount = 0;
+    let faultCount = 0;
+    for (const { span } of this.spans) {
+      const event = span.update(now);
+      if (event === 'energized') this.sound.playEnergize();
+      else if (event === 'repaired') this.sound.playRepair();
+      if (span.isEnergized()) energizedCount++;
+      if (span.isFaulted()) faultCount++;
+    }
+    this.sound.updateFaultAlarm(now, faultCount);
+
+    this.economy.tick(dt, energizedCount);
+
+    if (now >= this.nextStormAt) this.triggerStorm(now);
+
+    this.updateGhost(now);
+    this.updateHud();
+
+    if (now - this.lastSave > AUTOSAVE_INTERVAL_MS) {
+      this.lastSave = now;
+      this.save();
+    }
+
+    this.composer.render();
+  };
+
+  private onResize = (): void => {
+    this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
+    this.composer.setSize(this.container.clientWidth, this.container.clientHeight);
+    this.cameraRig.onResize();
+  };
+}
