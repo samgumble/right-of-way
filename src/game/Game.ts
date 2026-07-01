@@ -5,7 +5,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
-import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, ECONOMY, GRID, NEIGHBORHOOD, OBJECTIVE, PERMIT, RAIN, SHADOW, STORM, SUBSTATION, TOWER_HEIGHT } from './constants';
+import { ATMOSPHERE, BLACKOUT_PULSE, BLOOM, COLORS, DENY_SHAKE_DURATION_MS, ECONOMY, GRID, MILESTONE_PULSE, NEIGHBORHOOD, NETWORK_RECOMPUTE, OBJECTIVE, PERMIT, PLANT, RAIN, SHADOW, STORM, SUBSTATION, TOWER_HEIGHT } from './constants';
 import { Grid, type GridNode } from './Grid';
 import { Tower, buildTowerVisual, type TowerBranch } from './Tower';
 import { Span } from './Span';
@@ -122,6 +122,16 @@ export class Game {
   private readonly scene = new THREE.Scene();
   private readonly renderer: THREE.WebGLRenderer;
   private readonly composer: EffectComposer;
+  private readonly bloomPass: UnrealBloomPass;
+  private readonly vignettePass: ShaderPass;
+  /** Set to `performance.now()` on milestone completion; `null` when no pulse is
+   * active. Restarts rather than stacks if a second completion lands mid-pulse. */
+  private milestonePulseStart: number | null = null;
+  /** Same shape as `milestonePulseStart`, set on `blackoutStarted`. If both pulses are
+   * ever active in the same frame (a milestone completing at the same instant a
+   * blackout starts elsewhere), the blackout's tighten wins that frame — call order in
+   * `tick()` is deliberate, and a blackout is the more urgent of the two. */
+  private blackoutPulseStart: number | null = null;
   private readonly cameraRig: IsoCameraRig;
   private readonly grid = new Grid();
   private readonly economy = new Economy();
@@ -158,8 +168,12 @@ export class Game {
   private readonly connectedNeighborhoods = new Set<string>();
 
   private readonly objectives: Objective[] = [];
-  /** Set when the active objective completes; cleared once the next pair spawns. */
-  private nextObjectiveSpawnAt: number | null = null;
+  /** One scheduled-spawn timestamp per objective slot currently owed — a completion (or
+   * a growing concurrency target) pushes one entry each, rather than sharing a single
+   * slot that simultaneous completions would silently clobber. Not persisted, same as
+   * the pre-existing `nextStormAt` precedent — a reload mid-gap just re-schedules with a
+   * fresh delay via `topUpPendingObjectives`. */
+  private readonly pendingRespawns: number[] = [];
 
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointerNdc = new THREE.Vector2();
@@ -174,6 +188,11 @@ export class Game {
   private lastSave = performance.now();
   private isResetting = false;
   private nextStormAt = performance.now() + STORM.firstStrikeDelaySec * 1000;
+  /** Periodic recompute independent of the discrete action-triggered ones and the 3s
+   * autosave cadence — closes the staleness window generation variability/daily demand
+   * cycling would otherwise leave (their inputs drift continuously, with no discrete
+   * event of their own to hang a recompute off of). */
+  private nextNetworkRecomputeAt = performance.now() + NETWORK_RECOMPUTE.intervalMs;
   /** The `nextStormAt` value the warning cue has already fired for — reset implicitly
    * every time `triggerStorm` reschedules `nextStormAt`, so the cue fires exactly once
    * per storm cycle rather than every frame during the warning window. */
@@ -197,22 +216,22 @@ export class Game {
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.cameraRig.camera));
-    const bloomPass = new UnrealBloomPass(
+    this.bloomPass = new UnrealBloomPass(
       new THREE.Vector2(container.clientWidth, container.clientHeight),
-      0.55,
-      0.4,
-      0.2,
+      BLOOM.strength,
+      BLOOM.threshold,
+      BLOOM.radius,
     );
-    this.composer.addPass(bloomPass);
+    this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
     // Vignette must come after OutputPass: it mixes toward a plain SDR grey constant,
     // which needs to happen in the final sRGB-encoded buffer, not the linear HDR one
     // upstream — mixing in linear space made a near-black scene's corners read lighter
     // than its center, the opposite of a vignette.
-    const vignettePass = new ShaderPass(VignetteShader);
-    vignettePass.uniforms.offset.value = ATMOSPHERE.vignetteOffset;
-    vignettePass.uniforms.darkness.value = ATMOSPHERE.vignetteDarkness;
-    this.composer.addPass(vignettePass);
+    this.vignettePass = new ShaderPass(VignetteShader);
+    this.vignettePass.uniforms.offset.value = ATMOSPHERE.vignetteOffset;
+    this.vignettePass.uniforms.darkness.value = ATMOSPHERE.vignetteDarkness;
+    this.composer.addPass(this.vignettePass);
 
     this.scene.fog = new THREE.Fog(COLORS.background, ATMOSPHERE.fogNear, ATMOSPHERE.fogFar);
 
@@ -268,6 +287,7 @@ export class Game {
     this.loadSavedGame();
     this.spawnObjectiveEntities();
     this.recomputeNetworkState();
+    this.checkObjectiveCompletions();
 
     this.bindInput();
     window.addEventListener('resize', this.onResize);
@@ -482,9 +502,34 @@ export class Game {
       return;
     }
 
+    if (this.selectedSubstation) {
+      if (key === 'u') this.handleSubstationUpgradeKey(this.selectedSubstation);
+      return;
+    }
+
     if (!this.selectedTower || (key !== 'u' && key !== 'i')) return;
     this.handleUpgradeKey(this.selectedTower, key === 'u' ? 'capacity' : 'resilience');
   };
+
+  /** `U` is the Substation's only upgrade path — no branch choice, so no `I` handler
+   * (mirrors Tower's universal tier 1→2 step's shape, not its branching tier 2→3). */
+  private handleSubstationUpgradeKey(substation: Substation): void {
+    if (!substation.canUpgrade()) {
+      substation.denyFeedback();
+      this.sound.playDeny();
+      return;
+    }
+    const cost = SUBSTATION.upgradeCost;
+    if (!this.economy.canAfford(cost.capEx, cost.crewHours)) {
+      substation.denyFeedback();
+      this.sound.playDeny();
+      return;
+    }
+    this.economy.spend(cost.capEx, cost.crewHours);
+    substation.upgrade();
+    this.sound.playUpgrade(substation.getTier());
+    this.save();
+  }
 
   /** `U` performs the universal tier 1→2 step, or — once at tier 2 — the Capacity
    * branch to tier 3. `I` only ever means the Resilience branch, and only does
@@ -613,33 +658,94 @@ export class Game {
     if (this.plants.length > 0 || this.neighborhoods.length > 0) return;
     const plantNode = this.findBuildableNear(4, 4);
     const neighborhoodNode = this.findBuildableNear(16, 16);
-    this.createObjective(plantNode, neighborhoodNode, 'gas', NEIGHBORHOOD.startingDemandMW);
+    this.createObjective(plantNode, neighborhoodNode, 'gas', this.nextObjectiveTargetDemandMW());
   }
 
-  /** A new objective after the previous one completes — a fresh location (not the fixed
-   * starting corners) and a semi-random fuel type. Target stays at
-   * `NEIGHBORHOOD.startingDemandMW` for now: Wave 6 deliberately keeps it static and
-   * achievable without demand growth existing yet (Wave 7 is what makes a *later*
-   * target meaningfully higher than the last, synchronized with how much growth
-   * actually moves demand — escalating it here first would make every objective after
-   * the first unwinnable). */
-  private spawnNextObjective(): void {
-    const plantI = Math.floor(Math.random() * (GRID.cells + 1));
-    const plantJ = Math.floor(Math.random() * (GRID.cells + 1));
-    const neighborhoodI = GRID.cells - plantI;
-    const neighborhoodJ = GRID.cells - plantJ;
+  /** The concurrency ceiling — how many objectives are allowed to be active
+   * simultaneously right now — derived purely from how many have ever been completed,
+   * no separate persisted field. Growing-N: starts at 1 (identical to the original
+   * single-objective experience), gains a slot every
+   * `OBJECTIVE.objectivesPerConcurrencyStep` completions, capped at
+   * `OBJECTIVE.maxConcurrentObjectives`. */
+  private activeObjectiveTarget(): number {
+    const completedCount = this.objectives.reduce((count, o) => count + (o.completedAt !== null ? 1 : 0), 0);
+    return Math.min(
+      1 + Math.floor(completedCount / OBJECTIVE.objectivesPerConcurrencyStep),
+      OBJECTIVE.maxConcurrentObjectives,
+    );
+  }
 
-    const plantNode = this.findBuildableNear(plantI, plantJ);
-    const neighborhoodNode = this.findBuildableNear(neighborhoodI, neighborhoodJ);
-    this.createObjective(plantNode, neighborhoodNode, pickRandomFuelType(), NEIGHBORHOOD.startingDemandMW);
+  /** Mild escalation per objective ever created (active or completed), capped well
+   * under both `NEIGHBORHOOD.demandGrowthCapMW` and `ECONOMY.spanCapacityMW`'s top tier
+   * so no objective can ever become mathematically unwinnable. */
+  private nextObjectiveTargetDemandMW(): number {
+    return Math.min(
+      NEIGHBORHOOD.startingDemandMW + this.objectives.length * OBJECTIVE.targetEscalationPerObjective,
+      OBJECTIVE.maxTargetDemandMW,
+    );
+  }
+
+  /** True iff `(i, j)` keeps at least `OBJECTIVE.minPairSeparationCells` (Chebyshev)
+   * distance from every existing Plant/Neighborhood — so concurrent pairs don't crowd
+   * into visually/topologically degenerate placements as concurrency grows. */
+  private isFarEnoughFromExistingObjectives(i: number, j: number): boolean {
+    const minSep = OBJECTIVE.minPairSeparationCells;
+    for (const plant of this.plants) {
+      if (Math.max(Math.abs(plant.gridI - i), Math.abs(plant.gridJ - j)) < minSep) return false;
+    }
+    for (const neighborhood of this.neighborhoods) {
+      if (Math.max(Math.abs(neighborhood.gridI - i), Math.abs(neighborhood.gridJ - j)) < minSep) return false;
+    }
+    return true;
+  }
+
+  /** A new objective after a previous one completes (or to top up toward a newly grown
+   * concurrency target) — a fresh, randomized location and a semi-random fuel type.
+   * Retries a bounded number of times against `isFarEnoughFromExistingObjectives`
+   * before falling back to whatever candidate was found last — placement always
+   * succeeds, it just prefers spacing when it can get it. */
+  private spawnNextObjective(): void {
+    let plantNode: GridNode = this.findBuildableNear(0, 0);
+    let neighborhoodNode: GridNode = this.findBuildableNear(GRID.cells, GRID.cells);
+    for (let attempt = 0; attempt < OBJECTIVE.maxPlacementRetries; attempt++) {
+      const plantI = Math.floor(Math.random() * (GRID.cells + 1));
+      const plantJ = Math.floor(Math.random() * (GRID.cells + 1));
+      const neighborhoodI = GRID.cells - plantI;
+      const neighborhoodJ = GRID.cells - plantJ;
+
+      plantNode = this.findBuildableNear(plantI, plantJ);
+      neighborhoodNode = this.findBuildableNear(neighborhoodI, neighborhoodJ);
+      if (
+        this.isFarEnoughFromExistingObjectives(plantNode.i, plantNode.j) &&
+        this.isFarEnoughFromExistingObjectives(neighborhoodNode.i, neighborhoodNode.j)
+      ) {
+        break;
+      }
+    }
+    this.createObjective(plantNode, neighborhoodNode, pickRandomFuelType(), this.nextObjectiveTargetDemandMW());
+  }
+
+  /** If fewer objectives are active-or-already-scheduled than the current concurrency
+   * target allows, queue up the shortfall. Covers both the common case (a completion
+   * freed a slot) and the growth case (the target itself just increased, e.g. right
+   * after the completion that crossed an `objectivesPerConcurrencyStep` threshold),
+   * without double-scheduling when nothing changed. */
+  private topUpPendingObjectives(now: number): void {
+    const activeCount = this.objectives.reduce((count, o) => count + (o.completedAt === null ? 1 : 0), 0);
+    const shortfall = this.activeObjectiveTarget() - activeCount - this.pendingRespawns.length;
+    for (let i = 0; i < shortfall; i++) {
+      this.pendingRespawns.push(now + OBJECTIVE.respawnDelaySec * 1000);
+    }
   }
 
   /** Checked from `save()`, right after `recomputeNetworkState()` so served/redundant
    * state is fresh. Completion requires all three: the Neighborhood's live demand has
    * reached the fixed target, it's currently served, and currently redundant (decisions
    * #1 and #6) — a one-shot celebration fires exactly once per objective (guarded by
-   * `completedAt !== null` skipping already-completed ones), then the next pair spawns
-   * after a breathing-room delay. */
+   * `completedAt !== null` skipping already-completed ones). Each completion queues its
+   * own respawn slot (`pendingRespawns`) rather than sharing one — two objectives
+   * completing in the same tick must not silently clobber each other's scheduled
+   * replacement. */
   private checkObjectiveCompletions(): void {
     const now = performance.now();
     for (const objective of this.objectives) {
@@ -649,9 +755,11 @@ export class Game {
         objective.completedAt = now;
         this.sound.playMilestoneComplete();
         this.spawnBurst(neighborhood.attachPos.clone().setY(0.5), 'celebrate', now);
-        this.nextObjectiveSpawnAt = now + OBJECTIVE.respawnDelaySec * 1000;
+        this.milestonePulseStart = now;
+        this.pendingRespawns.push(now + OBJECTIVE.respawnDelaySec * 1000);
       }
     }
+    this.topUpPendingObjectives(now);
   }
 
   private handleTowerClick(tower: Tower): void {
@@ -1050,6 +1158,36 @@ export class Game {
     this.sunLight.intensity = THREE.MathUtils.lerp(ATMOSPHERE.nightKeyIntensity, ATMOSPHERE.dayKeyIntensity, dayFactor);
   }
 
+  /** No-op unless `milestonePulseStart` is set (same idiom as every other one-shot
+   * timed effect in this file). Linearly decays the boost back to zero over
+   * `MILESTONE_PULSE.durationMs`, added on top of whatever `BLOOM`/`ATMOSPHERE`'s named
+   * baseline constants currently are — never a hardcoded snapshot, so a later bloom or
+   * vignette retune still composes correctly with the pulse. */
+  private updateMilestonePulse(now: number): void {
+    if (this.milestonePulseStart === null) return;
+    const t = (now - this.milestonePulseStart) / MILESTONE_PULSE.durationMs;
+    const decay = Math.max(0, 1 - t);
+    this.bloomPass.strength = BLOOM.strength + MILESTONE_PULSE.bloomStrengthBoost * decay;
+    this.vignettePass.uniforms.offset.value = ATMOSPHERE.vignetteOffset + MILESTONE_PULSE.vignetteOffsetDelta * decay;
+    this.vignettePass.uniforms.darkness.value =
+      ATMOSPHERE.vignetteDarkness + MILESTONE_PULSE.vignetteDarknessDelta * decay;
+    if (t >= 1) this.milestonePulseStart = null;
+  }
+
+  /** Same no-op-unless-active idiom, inverted: eases the vignette *tighter* than
+   * baseline rather than opening it — see `BLACKOUT_PULSE`'s comment for why this is
+   * vignette-only (no bloom boost). Called after `updateMilestonePulse` in `tick()` so
+   * a blackout's tighten deliberately wins if both are ever active in the same frame. */
+  private updateBlackoutPulse(now: number): void {
+    if (this.blackoutPulseStart === null) return;
+    const t = (now - this.blackoutPulseStart) / BLACKOUT_PULSE.durationMs;
+    const decay = Math.max(0, 1 - t);
+    this.vignettePass.uniforms.offset.value = ATMOSPHERE.vignetteOffset + BLACKOUT_PULSE.vignetteOffsetDelta * decay;
+    this.vignettePass.uniforms.darkness.value =
+      ATMOSPHERE.vignetteDarkness + BLACKOUT_PULSE.vignetteDarknessDelta * decay;
+    if (t >= 1) this.blackoutPulseStart = null;
+  }
+
   /** Thin instanced streaks, all sharing one precomputed fall+wind tilt (wind is a
    * fixed constant, not per-storm, so every particle leans the same way). Reuses the
    * deterministic-InstancedMesh pattern from Grid's terrain patches, but these actually
@@ -1166,7 +1304,14 @@ export class Game {
         context = `TOWER T3 ${branchLabel} SELECTED · MAX TIER`;
       }
     } else if (this.selectedSubstation) {
-      context = 'SUBSTATION SELECTED · CLICK A TOWER/PLANT TO LINK, OR A NEIGHBORHOOD TO CONNECT DISTRIBUTION';
+      const substation = this.selectedSubstation;
+      const upgradeNote = substation.canUpgrade()
+        ? ` · [U] UPGRADE TO T2 — $${SUBSTATION.upgradeCost.capEx}/${SUBSTATION.upgradeCost.crewHours}h`
+        : ' · MAX TIER';
+      context =
+        `SUBSTATION T${substation.getTier()} SELECTED (${substation.capacityMW()} MW) ·` +
+        ' CLICK A TOWER/PLANT TO LINK, OR A NEIGHBORHOOD TO CONNECT DISTRIBUTION' +
+        upgradeNote;
     } else if (this.selectedPlant) {
       const plant = this.selectedPlant;
       context =
@@ -1196,14 +1341,32 @@ export class Game {
     });
   }
 
-  /** The active objective's live status line — blank during the brief respawn gap right
-   * after a completion, matching the existing "blank when not applicable" HUD note
-   * pattern (fault/warning lines work the same way). */
+  /** Ranks an active objective's urgency for the single-detail HUD line — blacked out
+   * is most urgent, fully served-and-redundant (about to complete) is least. Lower is
+   * more urgent. */
+  private objectiveUrgencyRank(objective: Objective): number {
+    const { neighborhood } = objective;
+    if (neighborhood.isBlackedOut()) return 0;
+    if (!neighborhood.isServed()) return 1;
+    if (!neighborhood.isRedundant()) return 2;
+    return 3;
+  }
+
+  /** Aggregate count + single most-urgent detail line — matches the existing
+   * `faultCount`/`blackoutCount` precedent exactly (a count, never a per-item list),
+   * so the HUD stays a meter rather than growing a menu as concurrency increases.
+   * Blank during the brief respawn gap right after every objective completes. */
   private computeObjectiveStatus(): string {
-    const active = this.objectives.find((o) => o.completedAt === null);
-    if (!active) return '';
-    const { neighborhood, targetDemandMW } = active;
-    const parts = [`MILESTONE · ${Math.round(neighborhood.currentDemandMW())}/${Math.round(targetDemandMW)} MW`];
+    const active = this.objectives.filter((o) => o.completedAt === null);
+    if (active.length === 0) return '';
+    const mostUrgent = active.reduce((best, o) =>
+      this.objectiveUrgencyRank(o) < this.objectiveUrgencyRank(best) ? o : best,
+    );
+    const { neighborhood, targetDemandMW } = mostUrgent;
+    const parts = [
+      active.length > 1 ? `${active.length} ACTIVE MILESTONES` : 'MILESTONE',
+      `${Math.round(neighborhood.currentDemandMW())}/${Math.round(targetDemandMW)} MW`,
+    ];
     if (neighborhood.isBlackedOut()) parts.push('BLACKED OUT');
     else if (!neighborhood.isServed()) parts.push('NOT SERVED');
     else if (!neighborhood.isRedundant()) parts.push('SERVED · NEEDS REDUNDANCY TO COMPLETE');
@@ -1230,7 +1393,7 @@ export class Game {
       ...this.substations.map((s): GraphNode => ({
         id: this.txNodeId(s),
         kind: 'substation',
-        capacityMW: SUBSTATION.capacityMW,
+        capacityMW: s.capacityMW(),
       })),
       ...this.neighborhoods.map((n): GraphNode => ({ id: n.id, kind: 'neighborhood', capacityMW: Infinity })),
     ];
@@ -1306,7 +1469,9 @@ export class Game {
       // invariant the softlock-prevention re-check below confirms stays intact.
       const event = neighborhood.setNetworkState(served, redundant, bottleneckMW);
       if (event === 'blackoutStarted') {
-        this.spawnBurst(neighborhood.attachPos.clone().setY(0.3), 'spark', performance.now());
+        const now = performance.now();
+        this.spawnBurst(neighborhood.attachPos.clone().setY(0.3), 'blackout', now);
+        this.blackoutPulseStart = now;
       }
     }
   }
@@ -1336,13 +1501,16 @@ export class Game {
         i: s.gridI,
         j: s.gridJ,
         pendingMs: s.getPendingRemainingMs() ?? undefined,
+        tier: s.getTier(),
       })),
       plants: this.plants.map((p) => ({ id: p.id, i: p.gridI, j: p.gridJ, fuelType: p.fuelType })),
       neighborhoods: this.neighborhoods.map((n) => ({
         id: n.id,
         i: n.gridI,
         j: n.gridJ,
-        demandMW: n.currentDemandMW(),
+        // The raw base, not the cycled `currentDemandMW()` — a reload at a different
+        // cycle phase must not compound the daily cycle on top of itself.
+        demandMW: n.rawDemandMW(),
       })),
       transmissionLinks: this.transmissionLinks.map(({ a, b, span }) => ({
         a: [a.gridI, a.gridJ] as [number, number],
@@ -1407,10 +1575,11 @@ export class Game {
       for (const s of data.substations ?? []) {
         if (!isValidGridNode(s.i, s.j)) continue;
         const pendingMs = Number.isFinite(s.pendingMs) && s.pendingMs! > 0 ? s.pendingMs : undefined;
+        const tier = Number.isFinite(s.tier) ? Math.min(Math.max(1, Math.round(s.tier!)), SUBSTATION.maxTier) : 1;
         const world = this.grid.nodeToWorld(s.i, s.j);
         this.grid.setOccupied(s.i, s.j);
         const substation = new Substation(s.i, s.j, world);
-        substation.materializeFromSave(pendingMs);
+        substation.materializeFromSave(pendingMs, tier);
         this.substations.push(substation);
         this.scene.add(substation.group);
         txNodeByKey.set(`${s.i},${s.j}`, substation);
@@ -1543,6 +1712,8 @@ export class Game {
 
     this.cameraRig.update();
     this.updateAtmosphere(now);
+    this.updateMilestonePulse(now);
+    this.updateBlackoutPulse(now);
 
     for (const tower of this.towers) {
       const event = tower.update(now);
@@ -1552,7 +1723,7 @@ export class Game {
       }
     }
 
-    for (const plant of this.plants) plant.update(now);
+    for (const plant of this.plants) plant.update(now, dt);
     for (const neighborhood of this.neighborhoods) {
       neighborhood.update(now, dt);
       if (neighborhood.checkCapacityWarning(NEIGHBORHOOD.demandWarningLeadSec)) {
@@ -1597,15 +1768,39 @@ export class Game {
       }
     }
 
-    this.economy.tick(dt, capExIncomeRate + objectiveIncomeRate);
+    // Simplified fuel cost (Wave 9) — a cheap existence check ("does this Plant have at
+    // least one currently-energized outgoing link"), not exact per-Neighborhood flow
+    // attribution; see `PLANT.fuelCostPerMW`'s comment. Computed alongside
+    // `objectiveIncomeRate` but subtracted only at this final combination point —
+    // never netted into a specific Neighborhood's income upstream, preserving the
+    // additive/isolated revenue model discipline.
+    let fuelCostRate = 0;
+    for (const plant of this.plants) {
+      const hasEnergizedLink = this.transmissionLinks.some(
+        (link) => (link.a === plant || link.b === plant) && link.span.isEnergized(),
+      );
+      if (hasEnergizedLink) {
+        fuelCostRate += plant.effectiveCapacityMW() * PLANT.fuelCostPerMW[plant.fuelType] * PLANT.assumedUtilizationFraction;
+      }
+    }
+
+    this.economy.tick(dt, capExIncomeRate + objectiveIncomeRate - fuelCostRate);
 
     this.updateStormWarning(now);
     if (now >= this.nextStormAt) this.triggerStorm(now);
 
-    if (this.nextObjectiveSpawnAt !== null && now >= this.nextObjectiveSpawnAt) {
-      this.nextObjectiveSpawnAt = null;
-      this.spawnNextObjective();
-      this.save();
+    if (now >= this.nextNetworkRecomputeAt) {
+      this.nextNetworkRecomputeAt = now + NETWORK_RECOMPUTE.intervalMs;
+      this.recomputeNetworkState();
+      this.checkObjectiveCompletions();
+    }
+
+    for (let i = this.pendingRespawns.length - 1; i >= 0; i--) {
+      if (now >= this.pendingRespawns[i]) {
+        this.pendingRespawns.splice(i, 1);
+        this.spawnNextObjective();
+        this.save();
+      }
     }
 
     this.updateRain(now, dt);

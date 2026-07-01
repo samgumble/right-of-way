@@ -79,13 +79,27 @@ The board now has two more kinds of structure alongside your towers:
 - **Power Plants** — fixed generation sources. Fuel type shows in the shape itself:
   twin stacks for coal, one tall stack for gas, a cooling-tower silhouette for nuclear,
   a dam for hydro, a tilted panel array for solar, turbines for wind. Click one to see
-  its nameplate and effective (capacity-factor-adjusted) MW.
+  its nameplate and effective (capacity-factor-adjusted) MW. Coal, gas, and nuclear
+  plants burn a running fuel cost — a quiet CapEx drain, only while they're actually
+  connected to the grid — while hydro/solar/wind cost essentially nothing to run beyond
+  their own lower nameplate/capacity factor. Solar and wind output isn't fixed either:
+  solar tracks the day/night cycle (near-zero after dark), and wind drifts up and down
+  on its own slow, semi-random rhythm — you'll see its turbine blades spin faster in a
+  gust and nearly stop in a lull, a real, live readout of how much power that plant is
+  actually putting out right now.
 - **Neighborhoods** — small house clusters that need power delivered to them. Click one
-  to see its MW demand.
+  to see its MW demand. Demand isn't flat either — it rises and falls over the course of
+  each day/night cycle, peaking in the evening like a real neighborhood's load curve. A
+  served Neighborhood's windows glow brighter the more demand it's currently pulling,
+  and go fully dark the instant it loses power — window light never lies about whether
+  the lights are actually on.
 - **Substations** — the voltage-transition point between your transmission network and a
   neighborhood's local distribution. **`Shift` + click** buildable ground to place one
   instead of a regular tower (same cost/terrain-gating and permit-pending wait as a
-  tower, just a distinct fenced-yard silhouette and a steeper price).
+  tower, just a distinct fenced-yard silhouette and a steeper price). Select one and
+  press **`U`** to upgrade it to tier 2 — more connection slots and a higher MW ceiling,
+  the same "visible insulator count = real capacity" idea as tower tiers, just without a
+  branch choice.
 
 Link a Plant, Tower, or Substation to another one by selecting one and clicking the
 other, exactly like stringing a tower-to-tower line. Select a Substation and click an
@@ -94,32 +108,39 @@ tauter line than your transmission spans (real utility poles, not lattice towers
 Neighborhood ever gets one distribution feeder.
 
 **A fully connected Neighborhood earns real money.** Once a Plant-to-Neighborhood chain
-carries enough capacity to cover a Neighborhood's demand, it starts paying CapEx/sec on
-top of whatever your individual lines already earn — a completely separate income
-stream, not a replacement for it. A Neighborhood that can't currently get enough power
-earns nothing until you fix that.
+carries enough capacity to cover a Neighborhood's current demand, it starts paying
+CapEx/sec on top of whatever your individual lines already earn — a completely separate
+income stream, not a replacement for it. A Neighborhood that can't currently get enough
+power earns nothing until you fix that. Since demand cycles and generation drifts,
+"currently" is doing real work here — a chain that comfortably serves a Neighborhood at
+noon might come up just short of its evening peak, or when its wind plant hits a lull.
 
-**Blackouts.** A Neighborhood with only one path back to a Plant is "at risk" — if a
-storm takes out that one path, the Neighborhood goes fully dark (a pulsing red glow
-across its whole cluster, worse than a single faulted line) and stops earning until you
-restore it. A second, independent path through a different Substation protects against
-this. Repairing the fault that caused it clears the blackout automatically.
+**Blackouts.** A Neighborhood with only one path back to a Plant is "at risk" — if it
+ever loses service while at risk (a storm taking out its one path, a demand peak
+outrunning capacity, or a wind/solar plant's output dropping), the Neighborhood goes
+fully dark (a bigger burst and a screen-tightening vignette pulse mark the moment it
+happens, then a pulsing red glow across its whole cluster while it stays that way — worse
+than a single faulted line) and stops earning until you restore it. A second, independent
+path through a different Substation protects against all of these at once. Repairing the
+fault (or otherwise restoring service) clears the blackout automatically.
 
-**Milestones.** Every Plant+Neighborhood pair is a real objective — a green status line
-under the top panel tracks it: how much of its target MW is currently served, and
-whether it's redundant yet. A milestone completes once the Neighborhood is fully served
-*and* has that second independent path (full N-1 redundancy) — served alone isn't
-enough. Completing one is a real event (a fanfare, a burst of light at the
-Neighborhood, and the MILESTONES counter in the top panel ticks up) and a fresh
-Plant+Neighborhood pair appears elsewhere a short while later, with a different fuel
-type. The game never ends — there's always another one coming.
+**Milestones.** Every Plant+Neighborhood pair is a real objective — a status line under
+the top panel tracks the most urgent one (how much of its target MW is currently served,
+and whether it's redundant yet), plus a count when more than one is active at once. A
+milestone completes once its Neighborhood is fully served *and* has that second
+independent path (full N-1 redundancy) — served alone isn't enough. Completing one is a
+real event (a bigger fanfare and burst of light, a brief bloom/vignette flash across the
+whole screen, and the MILESTONES counter ticks up) and a fresh Plant+Neighborhood pair
+appears elsewhere a short while later, with a different fuel type. The game never ends —
+there's always another one coming, and you'll gradually take on more than one active
+milestone at a time as you complete more of them.
 
-**Demand grows.** A Neighborhood's demand climbs slowly and continuously on its own,
-even after a milestone completes — a chain that comfortably serves it today can fall
-behind later if you never revisit it. A rising tone (distinct from the storm rumble)
-plus a steady HUD line warn you a Neighborhood is about to outgrow its current capacity,
-with enough lead time to upgrade a span's throughput or add another path before it
-actually stops being served.
+**Demand grows.** On top of its daily rise-and-fall cycle, a Neighborhood's baseline
+demand also climbs slowly and permanently over time, even after a milestone completes —
+a chain that comfortably serves it today can fall behind later if you never revisit it.
+A rising tone (distinct from the storm rumble) plus a steady HUD line warn you a
+Neighborhood is about to outgrow its current capacity, with enough lead time to upgrade
+a span's throughput or add another path before it actually stops being served.
 
 ## Camera
 
@@ -129,7 +150,7 @@ actually stops being served.
 
 ## Hotkeys
 
-- **`U`** — upgrade the selected tower (the Capacity branch, once at tier 2).
+- **`U`** — upgrade the selected tower (the Capacity branch, once at tier 2) or the selected Substation (its only upgrade path).
 - **`I`** — upgrade the selected tower via the Resilience branch (tier 2 only).
 - **`Q`** / **`E`** — rotate the camera 90° left/right.
 - **`Shift` + click** on buildable ground — place a Substation instead of a Tower.
@@ -138,12 +159,12 @@ actually stops being served.
 ## Reading the HUD
 
 - **Top-left panel** — CapEx, Crew-Hours, and your completed milestone count, live.
-- **Green line** — the active milestone's status (MW served/target, served/redundant state). Blank for a short while right after a milestone completes, before the next one appears.
+- **Green line** — the most urgent active milestone's status (MW served/target, served/redundant state), prefixed with a count once more than one is active at a time. Blank for a short while right after a milestone completes, before the next one appears.
 - **Red line (blinking, blackout)** — appears only when a Neighborhood has gone dark. Restore its last path to clear it.
 - **Red line (blinking, fault)** — appears only when something's faulted, with a live fault count and repair cost.
 - **Red line (steady)** — a storm warning: weather's rolling in, a check is imminent. Not blinking, so you can always tell it apart from a real, active fault.
 - **Red line (steady, capacity)** — a Neighborhood is about to outgrow its current capacity. Upgrade a span or add another path before it stops being served.
-- **Orange line** — context for whatever's currently selected (a tower's tier, upgrade options and costs).
+- **Orange line** — context for whatever's currently selected (a tower's or Substation's tier, upgrade options and costs).
 - **Dim line** — an onboarding hint for your first few actions. It stops appearing once you've placed two towers and strung a line, and never comes back.
 
 Your progress autosaves continuously — closing the tab and coming back picks up right where you left off.

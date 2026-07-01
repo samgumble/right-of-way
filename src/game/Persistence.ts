@@ -10,8 +10,10 @@ export interface SaveData {
   spans: { a: [number, number]; b: [number, number]; faulted?: boolean; throughputTier?: number }[];
   /** Player-placed, so these must persist — a Substation costs real CapEx.
    * `connections` is deliberately not stored here: like towers, it's re-derived by
-   * replaying span connections on load. */
-  substations?: { i: number; j: number; pendingMs?: number }[];
+   * replaying span connections on load. `tier` is the only new field the Wave 10
+   * 2-tier upgrade system needs — everything else about it stays purely live/derived.
+   * Absent on every pre-Wave-10 save; resolved to tier 1 on load. */
+  substations?: { i: number; j: number; pendingMs?: number; tier?: number }[];
   /** Game-spawned (never player-placed), but persisted starting Wave 2: once spans can
    * reference a Plant/Neighborhood by identity (`transmissionLinks`/`distributionSpans`
    * below), that identity has to survive a reload — a fresh deterministic respawn each

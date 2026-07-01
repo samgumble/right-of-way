@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { COLORS, DENY_SHAKE_DURATION_MS, PLANT } from './constants';
+import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, PLANT, WIND_TURBINE } from './constants';
 import { denyShakeOffset, easeOutBack } from './feedback';
+import { hash01 } from './Grid';
 
 export type FuelType = 'coal' | 'gas' | 'nuclear' | 'hydro' | 'solar' | 'wind';
 
@@ -35,8 +36,17 @@ export function pickRandomFuelType(): FuelType {
 
 /** Fuel-type differentiation is geometry only — no new color hues — same discipline as
  * the tower upgrade branches. Each silhouette is a real, recognizable shape (stacks, a
- * cooling-tower profile, a dam, a panel array, turbines) rather than a decorative variant. */
-function addFuelDetail(group: THREE.Group, material: THREE.Material, fuelType: FuelType): void {
+ * cooling-tower profile, a dam, a panel array, turbines) rather than a decorative variant.
+ * Returns the wind case's blade pivots (empty for every other fuel type) so `PowerPlant`
+ * can keep a live reference to animate — populated in place via `windPivotsOut` rather
+ * than returned directly, so the function's shape stays a plain `void` builder like every
+ * other geometry-factory free function in this project. */
+function addFuelDetail(
+  group: THREE.Group,
+  material: THREE.Material,
+  fuelType: FuelType,
+  windPivotsOut: THREE.Group[],
+): void {
   switch (fuelType) {
     case 'coal':
       for (const side of [-0.7, 0.7]) {
@@ -96,20 +106,34 @@ function addFuelDetail(group: THREE.Group, material: THREE.Material, fuelType: F
         const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 3.2, 6), material);
         mast.position.set(x, BASE_HEIGHT + 1.6, z);
         group.add(mast);
+
+        // The blade lives inside a pivot positioned at the hub (the mast top) — rotating
+        // the *pivot* sweeps the blade around the mast axis every tick; rotating the
+        // blade mesh directly would only spin its own local geometry in place, with no
+        // stable hub reference once a later change (e.g. a non-centered blade shape)
+        // stopped the two from coinciding by coincidence.
+        const pivot = new THREE.Group();
+        pivot.position.set(x, BASE_HEIGHT + 3.1, z);
+        group.add(pivot);
+
         const blade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.4, 0.18), material);
-        blade.position.set(x, BASE_HEIGHT + 3.1, z);
-        group.add(blade);
+        pivot.add(blade);
+        windPivotsOut.push(pivot);
       }
       break;
   }
 }
 
-export function buildPlantVisual(material: THREE.Material, fuelType: FuelType): THREE.Group {
+export function buildPlantVisual(
+  material: THREE.Material,
+  fuelType: FuelType,
+  windPivotsOut: THREE.Group[],
+): THREE.Group {
   const group = new THREE.Group();
   const base = new THREE.Mesh(new THREE.BoxGeometry(BASE_WIDTH, BASE_HEIGHT, BASE_DEPTH), material);
   base.position.y = BASE_HEIGHT / 2;
   group.add(base);
-  addFuelDetail(group, material, fuelType);
+  addFuelDetail(group, material, fuelType, windPivotsOut);
   return group;
 }
 
@@ -132,6 +156,14 @@ export class PowerPlant {
   private readonly spawnTime = performance.now();
   private settled = false;
   private denyStart: number | null = null;
+  /** Oscillates around 1.0 for solar/wind (real intermittency); stays exactly 1 for
+   * coal/gas/nuclear/hydro (dispatchable/steady, unchanged). Cached from `update()`,
+   * read by `effectiveCapacityMW()` and the wind-blade rotation speed below. */
+  private outputMultiplier = 1;
+  /** Empty for every fuel type except wind. Rotation speed reads `outputMultiplier`
+   * directly every tick — a real turbine's blades turn because of wind, not because
+   * it's grid-connected. */
+  private readonly windPivots: THREE.Group[] = [];
 
   constructor(gridI: number, gridJ: number, worldPos: THREE.Vector3, fuelType: FuelType) {
     this.gridI = gridI;
@@ -149,7 +181,7 @@ export class PowerPlant {
       metalness: 0.35,
     });
 
-    this.group = buildPlantVisual(this.material, fuelType);
+    this.group = buildPlantVisual(this.material, fuelType, this.windPivots);
     this.group.position.copy(this.basePos);
     this.group.scale.setScalar(0.001);
     this.group.userData.isPlant = true;
@@ -161,7 +193,42 @@ export class PowerPlant {
   }
 
   effectiveCapacityMW(): number {
-    return this.nameplateCapacityMW * PLANT.fuelSpecs[this.fuelType].capacityFactor;
+    return this.nameplateCapacityMW * PLANT.fuelSpecs[this.fuelType].capacityFactor * this.outputMultiplier;
+  }
+
+  /** The live generation-variability signal — 1 for dispatchable fuel types, oscillating
+   * for solar/wind. Read directly by Wave 6's wind-blade rotation speed. */
+  getOutputMultiplier(): number {
+    return this.outputMultiplier;
+  }
+
+  /** Phase-locked to the exact same day/night cycle `Game.updateAtmosphere` drives (0 =
+   * solar noon, 0.5 = midnight) — real panels aren't perfectly zero at night, hence the
+   * `solarNightFloor`. */
+  private solarOutputMultiplier(now: number): number {
+    const cyclePos = (now / 1000 / ATMOSPHERE.dayNightCycleSec) % 1;
+    const dayFactor = 0.5 + 0.5 * Math.cos(cyclePos * Math.PI * 2);
+    return PLANT.solarNightFloor + (1 - PLANT.solarNightFloor) * dayFactor;
+  }
+
+  /** A slow layered-sine pseudo-random walk over time — same hand-rolled technique as
+   * `Grid.terrainNoise`, just parameterized by time instead of grid coordinates.
+   * Phase-offset per-plant via `hash01` (keyed on this plant's fixed grid location) so
+   * multiple wind plants don't swing in lockstep. Clamped to a sane, never-negative
+   * range rather than trusting the layered sum's loose bound. */
+  private windOutputMultiplier(now: number): number {
+    const phase = hash01(this.gridI, this.gridJ, 40) * Math.PI * 2;
+    const t = now / 1000;
+    const wave =
+      Math.sin(t * 0.07 + phase) * 0.6 + Math.sin(t * 0.023 - phase * 1.3) * 0.3 + Math.cos(t * 0.041 + phase * 0.7) * 0.1;
+    const raw = 1 + wave * PLANT.windAmplitude;
+    return Math.min(PLANT.windMultiplierMax, Math.max(PLANT.windMultiplierMin, raw));
+  }
+
+  private computeOutputMultiplier(now: number): number {
+    if (this.fuelType === 'solar') return this.solarOutputMultiplier(now);
+    if (this.fuelType === 'wind') return this.windOutputMultiplier(now);
+    return 1;
   }
 
   setSelected(selected: boolean): void {
@@ -189,7 +256,16 @@ export class PowerPlant {
     this.denyStart = performance.now();
   }
 
-  update(now: number): void {
+  update(now: number, dt: number): void {
+    this.outputMultiplier = this.computeOutputMultiplier(now);
+
+    // A real turbine's blades turn because of wind, not because it's grid-connected —
+    // rotation speed reads the live multiplier directly, never a flat constant spin or
+    // a separate "energized" gate.
+    for (const pivot of this.windPivots) {
+      pivot.rotation.x += WIND_TURBINE.bladeRotationRadPerSec * this.outputMultiplier * dt;
+    }
+
     if (!this.settled) {
       const t = Math.min((now - this.spawnTime) / 280, 1);
       this.group.scale.setScalar(Math.max(0.001, easeOutBack(t)));

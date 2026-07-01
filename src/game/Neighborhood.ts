@@ -1,11 +1,11 @@
 import * as THREE from 'three';
-import { COLORS, DENY_SHAKE_DURATION_MS, NEIGHBORHOOD } from './constants';
+import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, NEIGHBORHOOD } from './constants';
 import { denyShakeOffset, easeOutBack } from './feedback';
 import { hash01 } from './Grid';
 
 const HOUSE_COUNT = 4;
 
-function buildHouse(material: THREE.Material, x: number, z: number, scale: number): THREE.Group {
+function buildHouse(material: THREE.Material, windowMaterial: THREE.Material, x: number, z: number, scale: number): THREE.Group {
   const house = new THREE.Group();
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.9 * scale, 0.7 * scale, 0.9 * scale), material);
@@ -17,13 +17,34 @@ function buildHouse(material: THREE.Material, x: number, z: number, scale: numbe
   roof.rotation.y = Math.PI / 4;
   house.add(roof);
 
+  // Two windows per house (8 across the cluster) — a small, countable "visual
+  // quantity," matching the project's own idiom. Flush against two adjacent body
+  // faces, a tiny offset outward to avoid z-fighting with the body mesh.
+  const windowSize = 0.18 * scale;
+  const windowDepth = 0.02;
+  const halfBody = 0.45 * scale;
+  const windowY = 0.35 * scale;
+
+  const windowFront = new THREE.Mesh(new THREE.BoxGeometry(windowSize, windowSize, windowDepth), windowMaterial);
+  windowFront.position.set(x, windowY, z + halfBody + windowDepth / 2);
+  house.add(windowFront);
+
+  const windowSide = new THREE.Mesh(new THREE.BoxGeometry(windowDepth, windowSize, windowSize), windowMaterial);
+  windowSide.position.set(x + halfBody + windowDepth / 2, windowY, z);
+  house.add(windowSide);
+
   return house;
 }
 
 /** A small cluster of low-poly houses, jittered via the same deterministic hash `Grid`
  * uses for terrain patches — no randomness, so a Neighborhood's layout is identical
  * every time it's spawned at the same grid coordinates. */
-export function buildNeighborhoodVisual(material: THREE.Material, gridI: number, gridJ: number): THREE.Group {
+export function buildNeighborhoodVisual(
+  material: THREE.Material,
+  windowMaterial: THREE.Material,
+  gridI: number,
+  gridJ: number,
+): THREE.Group {
   const group = new THREE.Group();
   for (let n = 0; n < HOUSE_COUNT; n++) {
     const angle = (n / HOUSE_COUNT) * Math.PI * 2 + hash01(gridI, gridJ, n) * 0.6;
@@ -31,7 +52,7 @@ export function buildNeighborhoodVisual(material: THREE.Material, gridI: number,
     const scale = 0.85 + hash01(gridI, gridJ, n + 20) * 0.3;
     const x = Math.cos(angle) * radius;
     const z = Math.sin(angle) * radius;
-    group.add(buildHouse(material, x, z, scale));
+    group.add(buildHouse(material, windowMaterial, x, z, scale));
   }
   return group;
 }
@@ -54,9 +75,19 @@ export class Neighborhood {
   readonly id: string;
 
   private readonly material: THREE.MeshStandardMaterial;
+  /** Shared across all 8 window meshes in the cluster — still `keyLight`-toned (no new
+   * hue), brightness driven by the cycled demand fraction in `update()`. */
+  private readonly windowMaterial: THREE.MeshStandardMaterial;
   private readonly basePos: THREE.Vector3;
   private selected = false;
+  /** The raw, growth-tracked base — persistence writes *this*, not the cycled
+   * `effectiveDemandMW` below, or a reload at a different cycle phase would compound
+   * the cycle on top of itself. Unchanged update logic from before daily cycling. */
   private demandMW: number;
+  /** The cycled value every other system (network graph, objectives, HUD, warning
+   * telegraph) actually reads — cached once per `update()` call (every animation
+   * frame), same "cache then read" precedent as `served`/`redundant`/`bottleneckMW`. */
+  private effectiveDemandMW: number;
   private readonly spawnTime = performance.now();
   private settled = false;
   private denyStart: number | null = null;
@@ -84,6 +115,7 @@ export class Neighborhood {
     this.gridI = gridI;
     this.gridJ = gridJ;
     this.demandMW = demandMW;
+    this.effectiveDemandMW = demandMW;
     this.id = `neighborhood-${gridI}-${gridJ}`;
     this.basePos = worldPos.clone();
 
@@ -95,7 +127,15 @@ export class Neighborhood {
       metalness: 0.15,
     });
 
-    this.group = buildNeighborhoodVisual(this.material, gridI, gridJ);
+    this.windowMaterial = new THREE.MeshStandardMaterial({
+      color: COLORS.keyLight,
+      emissive: new THREE.Color(COLORS.keyLight),
+      emissiveIntensity: 0,
+      roughness: 0.4,
+      metalness: 0.1,
+    });
+
+    this.group = buildNeighborhoodVisual(this.material, this.windowMaterial, gridI, gridJ);
     this.group.position.copy(this.basePos);
     this.group.scale.setScalar(0.001);
     this.group.userData.isNeighborhood = true;
@@ -106,8 +146,25 @@ export class Neighborhood {
     this.attachPos = new THREE.Vector3(worldPos.x, 0.5, worldPos.z - 1.3);
   }
 
-  currentDemandMW(): number {
+  /** The raw, growth-tracked base with no cycle applied — what persistence writes. */
+  rawDemandMW(): number {
     return this.demandMW;
+  }
+
+  /** The live, cycled demand every other system reads (network graph, objectives, HUD,
+   * warning telegraph) — cached from the last `update()` call, not recomputed here. */
+  currentDemandMW(): number {
+    return this.effectiveDemandMW;
+  }
+
+  /** Cosine multiplier centered at 1.0, reusing `Game.updateAtmosphere`'s exact
+   * `dayNightCycleSec`/cycle-position convention (0 = solar noon, 0.5 = midnight) so no
+   * second timer is needed. Phase-shifted toward evening per
+   * `NEIGHBORHOOD.demandCyclePhaseOffset`. */
+  private demandCycleFactor(now: number): number {
+    const cyclePos = (now / 1000 / ATMOSPHERE.dayNightCycleSec) % 1;
+    const shifted = cyclePos - NEIGHBORHOOD.demandCyclePhaseOffset;
+    return 1 + NEIGHBORHOOD.demandCycleAmplitude * Math.cos(shifted * Math.PI * 2);
   }
 
   /** Blackout triggers the instant a previously-served, at-risk (non-redundant)
@@ -169,8 +226,8 @@ export class Neighborhood {
    * doesn't need a warning — that problem has already happened, this is for catching it
    * *before* it does. */
   private isApproachingCapacity(leadSec: number): boolean {
-    if (this.demandMW > this.bottleneckMW) return false;
-    const projectedDemand = this.demandMW + NEIGHBORHOOD.demandGrowthMWPerSec * leadSec;
+    if (this.effectiveDemandMW > this.bottleneckMW) return false;
+    const projectedDemand = this.effectiveDemandMW + NEIGHBORHOOD.demandGrowthMWPerSec * leadSec;
     return projectedDemand > this.bottleneckMW;
   }
 
@@ -197,6 +254,7 @@ export class Neighborhood {
 
   update(now: number, dt: number): void {
     this.demandMW = Math.min(this.demandMW + NEIGHBORHOOD.demandGrowthMWPerSec * dt, NEIGHBORHOOD.demandGrowthCapMW);
+    this.effectiveDemandMW = this.demandMW * this.demandCycleFactor(now);
 
     if (!this.settled) {
       const t = Math.min((now - this.spawnTime) / 280, 1);
@@ -225,6 +283,13 @@ export class Neighborhood {
         this.material.emissiveIntensity = 0;
       }
     }
+
+    // Window brightness is independent of the selection highlight (which only recolors
+    // the body/roof material above) — reads the cycled demand fraction, hard-gated to
+    // fully dark whenever the cluster has no power at all.
+    const demandFraction = Math.min(1, Math.max(0, this.effectiveDemandMW / NEIGHBORHOOD.demandGrowthCapMW));
+    const windowsSuppressed = this.blackedOut || !this.served;
+    this.windowMaterial.emissiveIntensity = windowsSuppressed ? 0 : demandFraction * NEIGHBORHOOD.windowBrightnessMax;
 
     this.group.position.copy(this.basePos);
     if (this.denyStart !== null) {

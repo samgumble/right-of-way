@@ -149,6 +149,26 @@ export const OBJECTIVE = {
    * under the next thing. First-pass pacing, same caveat as every other tuning
    * constant here. */
   respawnDelaySec: 25,
+  /** Growing-N concurrency: starts at 1 (identical to the original single-objective
+   * experience), gains one more concurrent slot every `objectivesPerConcurrencyStep`
+   * completions, capped at `maxConcurrentObjectives`. Complexity is revealed gradually,
+   * derived from real progress — the same onboarding philosophy as the tower/permit
+   * systems — rather than front-loading multiple simultaneous goals on a fresh game. */
+  objectivesPerConcurrencyStep: 3,
+  maxConcurrentObjectives: 3,
+  /** Mild per-objective escalation so later milestones are a real step up, capped well
+   * under both `NEIGHBORHOOD.demandGrowthCapMW` (130) and `ECONOMY.spanCapacityMW[2]`
+   * (140) — no objective can ever become mathematically unwinnable even at the highest
+   * tier of span the game offers. */
+  targetEscalationPerObjective: 6,
+  maxTargetDemandMW: 100,
+  /** Minimum grid-cell separation a newly spawned Plant/Neighborhood must keep from
+   * every existing Plant/Neighborhood, so concurrent pairs don't crowd into
+   * visually/topologically degenerate placements as concurrency grows. Retried a
+   * bounded number of times before falling back to whatever candidate was found last —
+   * a placement always succeeds, it just prefers spacing when it can get it. */
+  minPairSeparationCells: 4,
+  maxPlacementRetries: 8,
 } as const;
 
 export const ATMOSPHERE = {
@@ -200,8 +220,47 @@ export const PARTICLE_BURST = {
   dust: { color: COLORS.steelBlue, count: 10, durationMs: 500, speed: 2.2, size: 0.14 },
   spark: { color: COLORS.faultRed, count: 14, durationMs: 420, speed: 4.5, size: 0.09 },
   /** Milestone completion — brighter/wider spread than dust/spark, a real celebration
-   * beat, not another utility-work cue. */
-  celebrate: { color: COLORS.energizedGreen, count: 22, durationMs: 750, speed: 3.6, size: 0.17 },
+   * beat, not another utility-work cue. Bigger than its original numbers (22/750) to
+   * carry the escalated milestone payoff (bloom/vignette pulse, see `MILESTONE_PULSE`). */
+  celebrate: { color: COLORS.energizedGreen, count: 34, durationMs: 1100, speed: 3.6, size: 0.17 },
+  /** A blackout starting — bigger/longer than `spark` (same `faultRed` hue,
+   * geometry/timing differentiation only, matching the fuel-silhouette/tower-branch
+   * precedent), since it's a whole-cluster consequence, not a single-span nick. */
+  blackout: { color: COLORS.faultRed, count: 24, durationMs: 700, speed: 5.5, size: 0.13 },
+} as const;
+
+/** Named so `Game`'s `bloomPass` construction and `updateMilestonePulse`'s rest-state
+ * reference the exact same source of truth — a later bloom-review retune of these
+ * values automatically composes with the pulse instead of needing a second edit. */
+export const BLOOM = {
+  strength: 0.55,
+  threshold: 0.4,
+  radius: 0.2,
+} as const;
+
+export const MILESTONE_PULSE = {
+  /** One-shot celebration beat on milestone completion: briefly boosts bloom strength
+   * and opens the vignette (reduces `offset`/`darkness` below their `ATMOSPHERE`
+   * baseline), linearly decaying back to whatever the live baseline currently is —
+   * never a hardcoded snapshot, so it composes correctly with any later bloom/vignette
+   * retune. Restarts (not stacks) if a second milestone completes mid-pulse, matching
+   * the project's existing one-shot-cue precedent (e.g. the storm warning dedup token). */
+  durationMs: 900,
+  bloomStrengthBoost: 0.45,
+  vignetteOffsetDelta: -0.35,
+  vignetteDarknessDelta: -0.2,
+} as const;
+
+export const BLACKOUT_PULSE = {
+  /** A blackout starting — reuses `MILESTONE_PULSE`'s exact easing pattern, inverted:
+   * the vignette *tightens* (positive deltas, not negative) rather than opens, an
+   * ominous cue instead of a celebratory one. Vignette-only, no bloom boost — a
+   * blackout shouldn't compete for brightness with the already-reviewed fault-red
+   * bloom (see the Wave 3 bloom review). Strictly gated on the already-computed
+   * `blackoutStarted` classification — never an independent trigger. */
+  durationMs: 900,
+  vignetteOffsetDelta: 0.35,
+  vignetteDarknessDelta: 0.2,
 } as const;
 
 export const PLANT = {
@@ -219,20 +278,68 @@ export const PLANT = {
     solar: { nameplateCapacityMW: 100, capacityFactor: 0.25 },
     wind: { nameplateCapacityMW: 120, capacityFactor: 0.35 },
   },
+  /** Generation variability: `PowerPlant.outputMultiplier` oscillates around 1.0 on top
+   * of `capacityFactor` (which stays untouched) — solar phase-locked to the exact same
+   * day/night cycle `Game.updateAtmosphere` already drives (0 = solar noon, 0.5 =
+   * midnight), wind via a slow layered-sine walk in the same hand-rolled style as
+   * `Grid.terrainNoise`, phase-offset per-plant via `hash01` so multiple wind plants
+   * don't swing in lockstep. Coal/gas/nuclear/hydro are unaffected — their multiplier
+   * stays exactly 1, dispatchable/steady by design. */
+  solarNightFloor: 0.08,
+  windAmplitude: 0.55,
+  windMultiplierMin: 0.15,
+  windMultiplierMax: 1.6,
+  /** Simplified fuel cost (PLAN.md's Wave 9 decision — a cheap existence check rather
+   * than exact per-Neighborhood flow attribution, deliberately kept out of
+   * `network.ts`): a Plant with at least one currently-energized outgoing transmission
+   * link accrues `effectiveCapacityMW() * fuelCostPerMW[fuelType] *
+   * assumedUtilizationFraction` CapEx cost per second. Coal/gas burn real fuel;
+   * nuclear's fuel cost is low relative to its capital cost (matching real economics);
+   * hydro/solar/wind cost near-nothing to run. `assumedUtilizationFraction` absorbs the
+   * "don't overcharge a small Neighborhood behind a huge Plant" concern without needing
+   * exact flow data. */
+  fuelCostPerMW: {
+    coal: 0.018,
+    gas: 0.022,
+    nuclear: 0.006,
+    hydro: 0.001,
+    solar: 0,
+    wind: 0,
+  },
+  assumedUtilizationFraction: 0.4,
+} as const;
+
+/** Independent of the discrete action-triggered recomputes (place/string/storm/repair/
+ * etc.) and the 3s autosave cadence — closes the staleness window for continuously-
+ * changing inputs (generation variability, daily demand cycling) that don't fire a
+ * discrete event of their own to hang a recompute off of. */
+export const NETWORK_RECOMPUTE = {
+  intervalMs: 1000,
+} as const;
+
+export const WIND_TURBINE = {
+  /** Rotation speed at `outputMultiplier === 1` — actual speed scales with the live
+   * multiplier every tick (faster in high wind, slow/near-still in a lull), never a
+   * flat constant spin. */
+  bladeRotationRadPerSec: 2.4,
 } as const;
 
 export const SUBSTATION = {
   /** Placement CapEx cost — pricier than a base tower, reflecting bigger infrastructure.
    * Terrain-multiplied on top, same as tower cost. */
   cost: 220,
-  /** Connection-slot count — governs the insulator-nub visual on its transmission side,
-   * same "visual quantity = real capacity" discipline as Tower. Small and fixed: a
-   * Substation is a single fixed-capacity purchase, not an upgradeable lattice tower. */
-  maxConnections: 3,
-  /** MW throughput ceiling the Wave 3 network algorithm reads. Sourced from this same
-   * constant group as `maxConnections` so there's exactly one place either number could
-   * drift from the other, not a separate upgrade-tier table. */
-  capacityMW: 220,
+  /** A 2-tier system (not Tower's 3) — a Substation has no second axis like Tower's
+   * storm-weighting Resilience branch to justify a branch choice; manufacturing one
+   * would be an arbitrary game-y mechanic. `maxConnectionsByTier`/`capacityMWByTier`
+   * scale together from this one shared tier-indexed table (indexed by tier - 1) —
+   * exactly one place either number could ever drift from the other, preserving "one
+   * number, one visual, no drift." */
+  maxConnectionsByTier: [3, 5] as const,
+  capacityMWByTier: [220, 400] as const,
+  maxTier: 2,
+  /** Tier 1→2 upgrade cost — a single path, no branch choice (mirrors Tower's
+   * universal tier 1→2 step's shape, not its branching tier 2→3). */
+  upgradeCost: { capEx: 260, crewHours: 55 },
   /** Crew-Hours cost to connect a Substation to a Neighborhood (a distribution span) —
    * same distance-scaled shape as `ECONOMY.spanCostBase`/`spanCostPerUnitDistance`, kept
    * as its own (smaller) pair since a short local feeder costs less labor than a
@@ -261,4 +368,18 @@ export const NEIGHBORHOOD = {
   /** Lead time for the capacity warning telegraph — longer than the storm warning's 4s
    * since reacting means a real deliberate upgrade decision, not a quick glance. */
   demandWarningLeadSec: 30,
+  /** Daily demand cycling: a cosine multiplier on top of the raw linear-growth demand,
+   * reusing `ATMOSPHERE.dayNightCycleSec` directly (zero new timer). Cycle position 0
+   * is solar noon and 0.5 is midnight, matching `Game.updateAtmosphere`'s exact
+   * convention exactly. `demandCyclePhaseOffset` shifts the peak away from noon toward
+   * evening (real grid load peaks a few hours after solar noon, not at it) —
+   * `demandCycleAmplitude` is how far above/below the raw base the cycle swings. */
+  demandCyclePhaseOffset: 0.3,
+  demandCycleAmplitude: 0.22,
+  /** Window brightness ceiling at `currentDemandMW() / demandGrowthCapMW === 1` — reads
+   * the cycled demand, so windows read brighter during each cycle's demand peak
+   * (thematically, brightest in the evening, once phase-shifted per
+   * `demandCyclePhaseOffset`). Hard-suppressed to 0 whenever not served or blacked out
+   * — window light can never contradict "this cluster has no power." */
+  windowBrightnessMax: 0.85,
 } as const;

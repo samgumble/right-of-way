@@ -15,9 +15,36 @@ const TANK_POSITIONS: [number, number][] = [
   [0, 0.75],
 ];
 
+/** Insulator nubs gained *reaching* `targetTier` (mirrors Tower's
+ * `addArmForTier`/`addArm` convention exactly: `targetTier` 1 means tier 1's own base
+ * count, built once by `buildSubstationVisual`; `targetTier` 2+ is called from
+ * `Substation.upgrade()`/`materializeFromSave()` and only adds that tier's *newly
+ * gained* nubs). Each tier's nubs sit in their own row (lower on the fence line than
+ * the last) rather than reflowing earlier tiers' already-placed meshes — no overlap,
+ * reads as "another row of capacity," matching the arm-per-tier idiom Tower already
+ * established. Visible nub count always equals `maxConnectionsByTier[tier - 1]`
+ * exactly — not decoration, same "visual quantity = real capacity" discipline. */
+function addInsulatorsForTier(group: THREE.Group, material: THREE.Material, targetTier: number): void {
+  const countAtThisTier =
+    targetTier === 1
+      ? SUBSTATION.maxConnectionsByTier[0]
+      : SUBSTATION.maxConnectionsByTier[targetTier - 1] - SUBSTATION.maxConnectionsByTier[targetTier - 2];
+  const usableWidth = PAD_WIDTH * 0.7;
+  const y = PAD_HEIGHT + TANK_HEIGHT + 0.35 - (targetTier - 1) * 0.3;
+  for (let i = 0; i < countAtThisTier; i++) {
+    const t = countAtThisTier === 1 ? 0.5 : i / (countAtThisTier - 1);
+    const insulator = new THREE.Mesh(insulatorGeo, material);
+    insulator.position.set((t - 0.5) * usableWidth, y, -1.1);
+    insulator.castShadow = true;
+    group.add(insulator);
+  }
+}
+
 /** Shared low-poly substation geometry — a fenced utility-yard silhouette, deliberately
  * distinct from both the lattice tower and the house cluster, so all three new entity
- * types read apart from Tower and each other at a glance. */
+ * types read apart from Tower and each other at a glance. Tier 1 only — tier 2's nubs
+ * are added later by `addInsulatorsForTier` (`Substation.upgrade()`/
+ * `materializeFromSave()`), never rebuilt here. */
 export function buildSubstationVisual(material: THREE.Material): THREE.Group {
   const group = new THREE.Group();
 
@@ -31,17 +58,7 @@ export function buildSubstationVisual(material: THREE.Material): THREE.Group {
     group.add(tank);
   }
 
-  // Insulator nubs on the transmission-side edge — count matches
-  // `SUBSTATION.maxConnections` exactly, same "visual quantity = real capacity"
-  // discipline as Tower's cross-arms.
-  const usableWidth = PAD_WIDTH * 0.7;
-  const maxConnections: number = SUBSTATION.maxConnections;
-  for (let i = 0; i < maxConnections; i++) {
-    const t = maxConnections === 1 ? 0.5 : i / (maxConnections - 1);
-    const insulator = new THREE.Mesh(insulatorGeo, material);
-    insulator.position.set((t - 0.5) * usableWidth, PAD_HEIGHT + TANK_HEIGHT + 0.35, -1.1);
-    group.add(insulator);
-  }
+  addInsulatorsForTier(group, material, 1);
 
   return group;
 }
@@ -64,6 +81,7 @@ export class Substation {
   private readonly basePos: THREE.Vector3;
   private selected = false;
   private connections = 0;
+  private tier = 1;
 
   private readonly spawnTime = performance.now();
   private settled = false;
@@ -113,8 +131,34 @@ export class Substation {
     return this.selected;
   }
 
+  getTier(): number {
+    return this.tier;
+  }
+
+  canUpgrade(): boolean {
+    return this.tier < SUBSTATION.maxTier;
+  }
+
+  /** The MW throughput ceiling the network algorithm reads — sourced from the exact
+   * same tier-indexed table as `maxConnections()` so there's one place either number
+   * could ever drift from the other. */
+  capacityMW(): number {
+    return SUBSTATION.capacityMWByTier[this.tier - 1];
+  }
+
+  /** Tier 1→2 only — no branch choice (Substation has no second axis like Tower's
+   * storm-weighting Resilience branch to justify one). Adds this tier's newly-gained
+   * insulator nubs to the existing group, same "grow in place" idiom as Tower's
+   * `addArm` — never rebuilds the base geometry. */
+  upgrade(): void {
+    if (!this.canUpgrade()) return;
+    this.tier++;
+    addInsulatorsForTier(this.group, this.material, this.tier);
+    this.activationPulseStart = performance.now();
+  }
+
   hasFreeCapacity(): boolean {
-    return this.connections < SUBSTATION.maxConnections;
+    return this.connections < SUBSTATION.maxConnectionsByTier[this.tier - 1];
   }
 
   addConnection(): void {
@@ -134,13 +178,18 @@ export class Substation {
     return Math.max(0, this.permitClearAt - performance.now());
   }
 
-  materializeFromSave(pendingMs?: number): void {
+  /** `tier` defaults to 1 — legacy pre-Wave-10 saves have no `tier` field at all
+   * (`Persistence`/`Game.loadSavedGame` pass `undefined`, resolved to 1 here), and stay
+   * fully upgradeable from that point exactly like a freshly-placed tier-1 Substation. */
+  materializeFromSave(pendingMs?: number, tier = 1): void {
     this.settled = true;
     this.group.scale.setScalar(1);
     if (pendingMs && pendingMs > 0) {
       this.permitClearAt = performance.now() + pendingMs;
       this.material.opacity = 0.65;
     }
+    for (let t = 2; t <= tier; t++) addInsulatorsForTier(this.group, this.material, t);
+    this.tier = tier;
   }
 
   update(now: number): SubstationEvent | null {

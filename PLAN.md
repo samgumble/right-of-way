@@ -45,6 +45,7 @@ hand-written catenary function, not Rapier.
 | — | More depth: span terrain cost, storm warning, line throughput (out-of-roadmap) | **Done** — see below |
 | — | Camera rotation hotkey (out-of-roadmap) | **Done** — see below |
 | — | Plant/Substation/Neighborhood redesign — real purpose/win condition (out-of-roadmap) | **Done** — all 8 waves, see below |
+| — | "10x pass" — deepening Plants/Neighborhoods/N-1 + graphics/animation polish (out-of-roadmap) | **Done** — all 11 waves, see below |
 | 6 | Stretch: procedural regions, rival AI utility | Not started (audio and upgrade branching were pulled into the 10x expansion; procedural regions/rival AI remain open stretch goals) |
 
 ## Phase 1 scope (delivered)
@@ -425,32 +426,38 @@ open, matching every other hotkey.
 
 ## Up next
 
-**The plant/neighborhood/N-1 "real purpose" redesign is fully delivered — all 8 waves.**
-The game now has a real, industry-grounded win condition: connect a Power Plant to a
-Neighborhood through a real transmission/distribution network, hold N-1 redundancy, and
-a milestone completes — with a new one always waiting after. Final plan (synthesized
-from the background Plan agent's 969-line design) lives at
-`/Users/samgumble/.claude/plans/fancy-wandering-dawn.md`; the wave-by-wave delivery
-detail is below and in HANDOVER.md's matching "architecture additions" subsections.
+**Both the plant/neighborhood/N-1 "real purpose" redesign (8 waves) and the follow-up
+"10x pass" deepening it (11 more waves) are now fully delivered.** The game has a real,
+industry-grounded win condition — connect a Power Plant to a Neighborhood through a real
+transmission/distribution network, hold N-1 redundancy, complete a milestone, with a new
+one always waiting after — and that system now has real depth on top: multiple
+concurrent milestones as you progress, a daily demand cycle, generation variability
+(solar/wind output that actually moves), a running fuel cost for dispatchable plants,
+Substation upgrade tiers, and a matching graphics/animation pass (spinning wind turbines,
+a bigger milestone payoff, an escalated blackout cue, lit Neighborhood windows). Final
+plans live at `/Users/samgumble/.claude/plans/fancy-wandering-dawn.md` (both the
+original 8-wave design and the 10x pass, in that order in the same file); wave-by-wave
+delivery detail is below and in HANDOVER.md's matching "architecture additions"
+subsections.
 
-Two real bugs were caught and fixed during this redesign's own required verification,
-not left for later: an N-1 redundancy edge case (Wave 3, see that section) and a
-markdown paragraph-merging gap in the guide renderer (Wave 8, below) — both found by
-following through on the plan's own "verify, don't assume" checkpoints.
+Real bugs were caught and fixed during required verification across both passes, not
+left for later: an N-1 redundancy edge case and a markdown paragraph-merging gap (both
+in the original 8-wave redesign, see those sections) plus, this pass, a genuinely
+load-bearing discovery about this project's own *test methodology* — see the 10x pass's
+Wave 4 section for the `beforeunload`-triggered autosave race that was silently defeating
+`localStorage.clear()`-based test resets, and how it's now reliably avoided.
 
-The same "real playtest before adding more" recommendation from before still applies,
-now more than ever — this was a large body of new mechanical depth (network topology, a
-real graph algorithm, a second income stream, a blackout mechanic, a milestone
-lifecycle, continuous demand growth) shipped across one long session, each piece
-individually well-verified but never played as one continuous session by a human. A
-real, growing list of tuning constants (marsh thresholds, cost curve, storm weighting,
-branch costs, span/warning/throughput numbers, and now the entire `PLANT`/`SUBSTATION`/
-`NEIGHBORHOOD`/`OBJECTIVE` groups) are verified *correct* but not yet validated as *fun*,
-and audio has never been heard by a human. Phase 6's original stretch goals (procedural
-regions, a rival AI utility) remain open-ended and not currently scoped. See
-HANDOVER.md's "Known gaps" section for the full, honest list — it's substantial at this
-point, and a real playtest is unambiguously the highest-leverage next step, more than
-any single additional feature.
+The same "real playtest before adding more" recommendation still applies, now more than
+ever. This 10x pass explicitly acknowledged that trade-off going in (see the plan file's
+own "Explicitly acknowledged trade-off" note) and proceeded anyway per direct
+instruction — the tuning-constant surface has grown substantially again (every `PLANT`/
+`NEIGHBORHOOD`/`SUBSTATION`/`MILESTONE_PULSE`/`BLACKOUT_PULSE`/`WIND_TURBINE` constant
+from this pass, on top of everything already listed for the original redesign), all
+verified *correct* via direct state inspection and formula matching, none yet validated
+as *fun* by an actual human playing continuously. Phase 6's original stretch goals
+(procedural regions, a rival AI utility) remain open-ended and not currently scoped. See
+HANDOVER.md's "Known gaps" section for the full, honest list — a real playtest remains
+unambiguously the highest-leverage next step, more than any single additional feature.
 
 ## Plant/Neighborhood/Substation redesign — Wave 1 (delivered)
 
@@ -727,3 +734,117 @@ bold spans/paragraphs, reads correctly end-to-end); both regression saves confir
 zero console errors; a final live screenshot after a real `Shift+R` reset shows a clean,
 healthy fresh-game state with the correct starting HUD (`MILESTONE · 40/40 MW · NOT
 SERVED`, `MILESTONES: 0`).
+
+## "10x pass" — deepening Plants/Neighborhoods/N-1 + graphics/animation polish (delivered — all 11 waves)
+
+Not a numbered roadmap phase — after the 8-wave redesign above shipped, you asked to
+"10x the mechanics and gameplay"; an `AskUserQuestion` round confirmed the direction as
+deepening the Plants/Neighborhoods/N-1 system specifically (not the original sandbox
+again, not new breadth like procedural regions/rival AI). You then separately asked to
+also "polish the graphics and animations," mirroring the original "10x expansion"
+precedent of combining a graphics dimension and a mechanics dimension into one staged
+pass. Two background Plan agents designed each half; both were synthesized into one
+combined, dependency-ordered 11-wave plan (mechanics waves sequenced ahead of the
+graphics waves that read their new signals), with several judgment calls made and
+documented directly in the plan file: growing-N objective concurrency, an
+aggregate-count HUD shape, fuel cost simplified from exact flow-attribution to a cheap
+existence check, and two graphics-agent signal choices (wind rotation, window
+brightness) revised to read the richer continuous mechanics signals instead of simpler
+placeholders. Full plan at `/Users/samgumble/.claude/plans/fancy-wandering-dawn.md`
+(appended above the preserved original 8-wave plan in the same file).
+
+1. **Multi-objective structural core.** Concurrency grows from 1 (identical to the
+   original single-objective experience) to a cap of 3, one slot every 3 completions.
+   `pendingRespawns: number[]` replaced a single `nextObjectiveSpawnAt` slot — the exact
+   latent bug the planning pass caught (two simultaneous completions would have silently
+   clobbered each other's scheduled respawn under the old single-slot design) was
+   reproduced and confirmed fixed: two forced simultaneous completions each got an
+   independent respawn entry, and both correctly spawned separate replacements.
+   `targetDemandMW` escalates mildly per objective, capped well under both the demand
+   growth ceiling and the top span tier's capacity. HUD shows an aggregate count +
+   single most-urgent detail line, matching the existing fault/blackout-count precedent.
+2. **Daily demand cycling.** A cosine multiplier on top of the existing linear growth,
+   reusing the day/night cycle's exact phase convention (zero new timer), phase-shifted
+   toward evening. `Neighborhood` now caches a raw base (what persistence writes) and a
+   cycled effective value (what everything else reads) — verified the formula matches
+   exactly at several cycle points, and that a save/reload round-trips the *raw* value
+   without compounding the cycle on top of itself.
+3. **Bloom review.** Verify-first, per the plan — reviewed via a real forced fault +
+   blackout with both pulses near-peak simultaneously; the existing bloom baseline
+   already handles it without blowout (the blackout pulse shares its intensity ceiling
+   with the pre-existing fault pulse it's modeled after). No constant changed.
+4. **Milestone visual escalation.** `bloomPass`/`vignettePass` promoted to `Game` fields;
+   a new `updateMilestonePulse` briefly boosts bloom and opens the vignette on
+   completion, easing back to whatever the live baseline is. Verified the pulse peaks at
+   the exact expected boosted values and returns to the *exact* pre-pulse baseline with
+   no permanent drift. Bigger `celebrate` particle burst (34/1100ms, up from 22/750).
+5. **Generation variability.** `PowerPlant.outputMultiplier` — solar phase-locked to the
+   day/night cycle with a night floor, wind via a slow layered-sine walk (same hand-
+   rolled technique as terrain noise) phase-offset per-plant so multiple wind plants
+   drift independently. Coal/gas/nuclear/hydro confirmed byte-for-byte unchanged
+   (multiplier stays exactly 1). A new periodic network recompute (independent of the
+   discrete-action-triggered ones and the 3s autosave) closes the staleness window this
+   continuously-changing input would otherwise leave — verified live end-to-end: a
+   simulated generation collapse, with zero discrete action taken, correctly flipped a
+   Neighborhood to not-served and triggered a real blackout within about a second.
+6. **Wind turbine rotation.** The wind fuel type's blade meshes now live in a pivot
+   group at the mast-top hub, rotating at a rate that reads `outputMultiplier` live
+   every tick — verified the rotation delta over a fixed time window scales
+   proportionally with the multiplier at both a low- and high-wind sample.
+7. **Storm/blackout visual escalation.** A new `blackout` particle-burst style (bigger/
+   longer than the existing `spark`, same fault-red hue) replaces `spark` at the
+   blackout-started event site; a second, inverted pulse (vignette *tightens* instead of
+   opening, reusing wave 4's exact pattern) plays alongside it. Verified via a real
+   forced-storm blackout that both fire correctly and the vignette pulse eases back to
+   the exact baseline.
+8. **Neighborhood window detail.** A second shared material drives 2 window meshes per
+   house (8 across the 4-house cluster, confirmed by exact traversal count), brightness
+   reading the cycled demand fraction, hard-suppressed to fully dark whenever not served
+   or blacked out — verified both the brightness formula (exact match at multiple demand
+   fractions) and the suppression override (a high-demand Neighborhood with no power
+   still renders fully dark windows).
+9. **Fuel cost (simplified).** Per the plan's own resolved decision, simplified from
+   exact per-Neighborhood flow attribution (would have required extending
+   `computeMaxBottleneck`, the largest net-new algorithmic surface in the whole pass) to
+   a cheap existence check: a Plant with at least one currently-energized outgoing link
+   accrues `effectiveCapacityMW() * fuelCostPerMW[fuelType] * assumedUtilizationFraction`
+   per second, subtracted only at the final `Economy.tick()` combination point — never
+   netted into a Neighborhood's income upstream. Verified a disconnected plant costs
+   exactly zero, and that coal vs. wind plants of identical effective capacity produce
+   measurably different net income rates in the correct direction (wind's fuel cost is
+   zero).
+10. **Substation upgrade tiers.** A 2-tier system (not Tower's 3 — no second axis exists
+    to justify a branch choice), `maxConnectionsByTier`/`capacityMWByTier` sharing one
+    table so the two numbers can't drift apart. `U` upgrades a selected Substation the
+    same way it upgrades a tier-1 tower. Verified exact insulator-nub counts at both
+    tiers (3 and 5), that a real click-driven upgrade immediately updates the live
+    network graph's capacity, and that a legacy pre-Wave-10 save (no `tier` field at
+    all) correctly defaults to tier 1 and stays upgradeable.
+11. **Docs & final regression.** This section, plus the `GUIDE.md` updates alongside it.
+    `tsc --noEmit` stayed clean after every wave; `SAVE_VERSION` stayed at 1 — the only
+    new persisted field across the entire 11-wave pass is `substations[].tier?`,
+    everything else is purely live/derived.
+
+**One real, load-bearing discovery during this pass's own verification, not a code bug
+but a testing-methodology one**: `window.location.reload()` calls issued mid-session
+were repeatedly, silently failing to produce a genuinely fresh game — `localStorage.
+clear()` followed immediately by `reload()` left a window where the page's own
+`beforeunload` listener (registered in `Game`'s constructor, calling `save()`) fired
+during navigation and re-wrote the *current* dirty in-memory state back to storage,
+undoing the clear before the new page ever read it. Confirmed via a page-global marker
+that did NOT survive the reload (proving navigation itself was real) while game state
+DID survive (proving the save, not a failed reload, was the cause). Fixed for all
+verification from Wave 4 onward by removing the `beforeunload`/`visibilitychange`
+listeners and pausing the render loop (`renderer.setAnimationLoop(null)`) immediately
+before every test-driven `localStorage.clear()` + reload. This is the same *category* of
+race as the reset-hotkey and Wave-6 issues already documented above, but a new concrete
+instance of it — worth remembering for any future session that resets state mid-test via
+raw browser calls rather than the game's own `Shift+R` hotkey.
+
+Verified per-wave as listed above, plus: `tsc --noEmit` clean after every wave; every
+numeric formula (demand cycling, solar/wind output, milestone/blackout pulse curves,
+wind rotation, window brightness, fuel cost) matched a hand-computed reference exactly,
+not just eyeballed; the storm softlock-prevention invariant re-confirmed untouched after
+every storm-adjacent wave (1, 5, 7) by diffing the session's changes against
+`triggerStorm`/`minEnergizedSpansToStrike`/candidate-selection code, none of which this
+pass touched.
