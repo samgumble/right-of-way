@@ -35,13 +35,20 @@ export const ECONOMY = {
   spanCostBase: 10,
   spanCostPerUnitDistance: 0.6,
   towerMaxTier: 3,
-  /** Connection capacity per tier, indexed by (tier - 1). */
+  /** Connection capacity per tier, indexed by (tier - 1). Tier 3's value here is the
+   * Resilience-branch (and pre-Wave-6) capacity; the Capacity branch adds
+   * `tier3CapacityBonus` on top. */
   towerTierCapacity: [2, 4, 6] as const,
-  /** Cost to upgrade FROM tier (index + 1) TO the next tier. */
-  towerUpgradeCost: [
-    { capEx: 150, crewHours: 30 },
-    { capEx: 300, crewHours: 60 },
-  ],
+  tier3CapacityBonus: 2,
+  /** Tier 1→2 stays universal ("linear"). Tier 2→3 requires picking a branch — see
+   * `Tower.TowerBranch` and `Game`'s `U`/`I` handlers. Costs differ slightly per
+   * branch (Resilience trades a little CapEx for more Crew-Hours, reflecting bracing
+   * labor vs. hardware) but neither branch's cost is a "trap" option. */
+  towerUpgradeCost: {
+    linear: { capEx: 150, crewHours: 30 },
+    capacity: { capEx: 300, crewHours: 60 },
+    resilience: { capEx: 260, crewHours: 70 },
+  },
 } as const;
 
 export const DENY_SHAKE_DURATION_MS = 260;
@@ -84,6 +91,11 @@ export const STORM = {
    * (wet/unstable ground — see Wave 4) is this many times more likely to be picked as
    * the storm's target than a span with no marsh endpoint. */
   marshWeightMultiplier: 2.5,
+  /** Storm-target weighting (Wave 6): a span with at least one Resilience-branch
+   * tier-3 tower endpoint has its weight multiplied by this (< 1 — less likely to be
+   * struck). Applied multiplicatively alongside marshWeightMultiplier, not instead of
+   * it — a resilient tower on marsh is safer than average but not fully immune. */
+  resilienceWeightMultiplier: 0.4,
 } as const;
 
 export const PERMIT = {

@@ -7,7 +7,7 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
 import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, ECONOMY, GRID, PERMIT, RAIN, SHADOW, STORM, TOWER_HEIGHT } from './constants';
 import { Grid, type GridNode } from './Grid';
-import { Tower, buildTowerVisual } from './Tower';
+import { Tower, buildTowerVisual, type TowerBranch } from './Tower';
 import { Span } from './Span';
 import { IsoCameraRig } from './CameraRig';
 import { Economy } from './Economy';
@@ -279,25 +279,44 @@ export class Game {
       return;
     }
 
-    if (e.key.toLowerCase() !== 'u' || !this.selectedTower) return;
-    const tower = this.selectedTower;
+    const key = e.key.toLowerCase();
+    if (!this.selectedTower || (key !== 'u' && key !== 'i')) return;
+    this.handleUpgradeKey(this.selectedTower, key === 'u' ? 'capacity' : 'resilience');
+  };
 
+  /** `U` performs the universal tier 1→2 step, or — once at tier 2 — the Capacity
+   * branch to tier 3. `I` only ever means the Resilience branch, and only does
+   * anything at tier 2 (there's no branch choice yet at tier 1, so it's a silent
+   * no-op there rather than a deny — nothing was actually denied). */
+  private handleUpgradeKey(tower: Tower, keyBranch: TowerBranch): void {
     if (!tower.canUpgrade()) {
       tower.denyFeedback();
       this.sound.playDeny();
       return;
     }
-    const cost = ECONOMY.towerUpgradeCost[tower.getTier() - 1];
+
+    if (tower.getTier() === 1) {
+      if (keyBranch === 'resilience') return;
+      this.trySpendUpgrade(tower, ECONOMY.towerUpgradeCost.linear, undefined);
+      return;
+    }
+
+    // tower.canUpgrade() + tier !== 1 means tier is 2 here.
+    const cost = keyBranch === 'capacity' ? ECONOMY.towerUpgradeCost.capacity : ECONOMY.towerUpgradeCost.resilience;
+    this.trySpendUpgrade(tower, cost, keyBranch);
+  }
+
+  private trySpendUpgrade(tower: Tower, cost: { capEx: number; crewHours: number }, branch: TowerBranch | undefined): void {
     if (!this.economy.canAfford(cost.capEx, cost.crewHours)) {
       tower.denyFeedback();
       this.sound.playDeny();
       return;
     }
     this.economy.spend(cost.capEx, cost.crewHours);
-    tower.upgrade();
+    tower.upgrade(branch);
     this.sound.playUpgrade(tower.getTier());
     this.save();
-  };
+  }
 
   private onVisibilityChange = (): void => {
     if (document.hidden) this.save();
@@ -391,11 +410,19 @@ export class Game {
   }
 
   /** A span with at least one endpoint on marsh (wet/unstable ground) is more likely to
-   * be picked as a storm's target — terrain-weighted, not uniform. */
+   * be picked as a storm's target — terrain-weighted, not uniform. A span with at least
+   * one Resilience-branch tier-3 endpoint is less likely, applied multiplicatively on
+   * top (a resilient tower on marsh is safer than average, not immune). */
   private spanStormWeight(record: SpanRecord): number {
     const aMarsh = this.grid.terrainAt(record.a.gridI, record.a.gridJ) === 'marsh';
     const bMarsh = this.grid.terrainAt(record.b.gridI, record.b.gridJ) === 'marsh';
-    return aMarsh || bMarsh ? STORM.marshWeightMultiplier : 1;
+    let weight = aMarsh || bMarsh ? STORM.marshWeightMultiplier : 1;
+
+    const aResilient = record.a.getTier() === 3 && record.a.getBranch() === 'resilience';
+    const bResilient = record.b.getTier() === 3 && record.b.getBranch() === 'resilience';
+    if (aResilient || bResilient) weight *= STORM.resilienceWeightMultiplier;
+
+    return weight;
   }
 
   private pickWeightedStormTarget(candidates: SpanRecord[]): SpanRecord {
@@ -537,11 +564,19 @@ export class Game {
     let context = '';
     if (this.selectedTower) {
       const tower = this.selectedTower;
-      if (tower.canUpgrade()) {
-        const cost = ECONOMY.towerUpgradeCost[tower.getTier() - 1];
-        context = `TOWER T${tower.getTier()} SELECTED · [U] UPGRADE TO T${tower.getTier() + 1} — $${cost.capEx} / ${cost.crewHours}h`;
+      const tier = tower.getTier();
+      if (tier === 1) {
+        const cost = ECONOMY.towerUpgradeCost.linear;
+        context = `TOWER T1 SELECTED · [U] UPGRADE TO T2 — $${cost.capEx} / ${cost.crewHours}h`;
+      } else if (tier === 2) {
+        const cap = ECONOMY.towerUpgradeCost.capacity;
+        const res = ECONOMY.towerUpgradeCost.resilience;
+        context =
+          `TOWER T2 SELECTED · [U] CAPACITY — $${cap.capEx}/${cap.crewHours}h` +
+          ` · [I] RESILIENCE — $${res.capEx}/${res.crewHours}h`;
       } else {
-        context = `TOWER T${tower.getTier()} SELECTED · MAX TIER`;
+        const branchLabel = tower.getBranch() === 'resilience' ? 'RESILIENCE' : 'CAPACITY';
+        context = `TOWER T3 ${branchLabel} SELECTED · MAX TIER`;
       }
     }
     const faultCount = this.spans.reduce((count, { span }) => count + (span.isFaulted() ? 1 : 0), 0);
@@ -568,6 +603,7 @@ export class Game {
         j: t.gridJ,
         tier: t.getTier(),
         pendingMs: t.getPendingRemainingMs() ?? undefined,
+        branch: t.getBranch() ?? undefined,
       })),
       spans: this.spans.map(({ a, b, span }) => ({
         a: [a.gridI, a.gridJ] as [number, number],
@@ -596,11 +632,12 @@ export class Game {
         const tier = Math.min(Math.max(1, Math.round(t.tier)), ECONOMY.towerMaxTier);
 
         const pendingMs = Number.isFinite(t.pendingMs) && t.pendingMs! > 0 ? t.pendingMs : undefined;
+        const branch = t.branch === 'capacity' || t.branch === 'resilience' ? t.branch : undefined;
 
         const world = this.grid.nodeToWorld(t.i, t.j);
         this.grid.setOccupied(t.i, t.j);
         const tower = new Tower(t.i, t.j, world, TOWER_HEIGHT);
-        tower.materializeFromSave(tier, 0, pendingMs);
+        tower.materializeFromSave(tier, 0, pendingMs, branch);
         this.towers.push(tower);
         this.scene.add(tower.group);
         byKey.set(`${t.i},${t.j}`, tower);

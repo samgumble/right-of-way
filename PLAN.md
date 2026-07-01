@@ -39,9 +39,9 @@ hand-written catenary function, not Rapier.
 | — | localStorage persistence (out-of-roadmap, done between Phase 2 and 3) | **Done** — see [HANDOVER.md](HANDOVER.md) |
 | 3 | Map & pacing: terrain, storms, permitting | **Done** — see [HANDOVER.md](HANDOVER.md) |
 | 4 | Visual/UI polish, HUD, onboarding | **Done** — see [HANDOVER.md](HANDOVER.md) |
-| — | "10x expansion" (out-of-roadmap, six-wave plan, in progress) | **In progress** — see below |
+| — | "10x expansion" (out-of-roadmap, six-wave plan) | **Done** — all 6 waves, see below |
 | 5 | Deploy to hosting | **Done** — GitHub Pages, see below (superseded the original "Cloudflare Pages" placeholder) |
-| 6 | Stretch: procedural regions, rival AI utility | Not started (audio pulled forward into the 10x expansion) |
+| 6 | Stretch: procedural regions, rival AI utility | Not started (audio and upgrade branching were pulled into the 10x expansion; procedural regions/rival AI remain open stretch goals) |
 
 ## Phase 1 scope (delivered)
 
@@ -176,7 +176,7 @@ Full rationale and verification notes in HANDOVER.md — including a lesson on t
 environment's `requestAnimationFrame` throttling between tool calls (wall-clock `sleep`
 doesn't reliably advance in-game time; forcing a repaint via a screenshot does).
 
-## "10x expansion" (in progress)
+## "10x expansion" (delivered — all six waves)
 
 Not a numbered roadmap phase — you asked to "10x the graphics and mechanics," a
 deliberately large, open-ended request. Direction was confirmed explicitly before any
@@ -279,6 +279,38 @@ counts, including confirming it approaches but never crosses the 12s floor; and 
 non-negotiable one — 300 forced storm attempts against a single energized span with zero
 strikes, confirming the softlock-prevention invariant holds under all the new wiring.
 
+**Wave 6 — Upgrade tree branching: delivered. This completes the "10x expansion" —
+all six waves are now done.** Tier 1→2 stays universal (`U`). At tier 2, the player
+picks a branch: `U` continues to mean **Capacity** (extends `towerTierCapacity` by
+`tier3CapacityBonus = 2`, so 8 connections instead of the flat 6), or the new `I` key
+means **Resilience** (that tower's spans get their storm-target weight multiplied by
+`STORM.resilienceWeightMultiplier = 0.4`, applied on top of Wave 5's marsh weighting,
+not instead of it). No picker UI — `Game.updateHud()`'s existing single context string
+just lists both options with their costs while a tier-2 tower is selected, same pattern
+already used for every other upgrade-context line. Visually, Capacity gets one wide
+cross-arm, Resilience gets two stacked ones — geometry-only differentiation, no new
+colors, same discipline as terrain tints. Schema gained one optional field,
+`towers[].branch?: 'capacity' | 'resilience'`, meaningful only at tier 3 and safely
+absent on every pre-Wave-6 save — `SAVE_VERSION` stays at 1.
+
+As the plan flagged in advance, `Tower.canUpgrade()`'s restructuring was the one
+genuinely non-trivial piece — a new `Game.handleUpgradeKey()` now branches on tier to
+decide what `U`/`I` actually do, rather than `canUpgrade()` alone being enough to gate
+the single old `U` handler.
+
+Verified thoroughly, including catching and correctly diagnosing several test-setup
+false alarms along the way (none were real bugs — see HANDOVER.md's Wave 6 section for
+the full account, including a `beforeunload`-save race very similar to the one already
+documented for the reset hotkey): fresh-tower capacity confirmed exactly 8 (Capacity)
+vs. 6 (Resilience); mesh counts confirmed 8 vs. 9 (matching the 1-arm vs. 2-arm visual
+design); the Resilience storm-weight reduction confirmed at 2.44:1 (expected 2.5:1) over
+3000 samples on verified-clean terrain; the softlock-prevention invariant re-confirmed
+(300 forced attempts, zero strikes) on a verified single-energized-span state; a full
+persistence round-trip (tier 3, Resilience branch) confirmed correct after a real page
+reload; and — the specific case the plan called out — a synthetic pre-Wave-6 save (a
+tier-3 tower with no `branch` field at all) loads without error, degrading gracefully to
+a minimal visual rather than crashing.
+
 ## Phase 5 scope (delivered)
 
 You asked to figure out storage/hosting. Save-data storage was already solved
@@ -304,10 +336,12 @@ needs a paid GitHub plan, and there's nothing sensitive in this repo).
 
 ## Up next
 
-Wave 6 (upgrade tree branching — Capacity vs. Resilience at tier 2→3) is next per the
-approved 10x plan, and the last wave in it. Revisit HANDOVER.md's "10x expansion"
-section for the exact scope before starting — the plan flags `Tower.canUpgrade()`'s
-restructuring (from one boolean to a branch-aware check) as the one genuinely
-non-trivial piece, and the schema gains one new optional field
-(`towers[].branch?: 'capacity' | 'resilience'`) that must stay safely absent/undefined
-on every pre-Wave-6 save with no migration needed.
+The "10x expansion" is complete — all six waves (audio; lighting/materials/atmosphere;
+particles/weather; terrain depth; economy depth; upgrade branching) are delivered and
+verified. Nothing is currently in progress. The only work still explicitly on the
+books is Phase 6's original stretch goals (procedural regions, a rival AI utility) —
+genuinely open-ended new-breadth features, not a scoped next step. Before picking either
+up, worth a real playtest of everything shipped so far — several tuning constants across
+Waves 4-6 (marsh thresholds, cost curve, storm weighting, branch costs) are verified
+*correct* but not yet validated as *fun*, and audio has never been heard by a human. See
+HANDOVER.md's "Known gaps" section for the full unvalidated-by-play list.

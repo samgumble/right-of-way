@@ -1,9 +1,11 @@
 # Handover
 
-Last updated: 2026-07-01. Phase 4 is fully done; Phase 5 (hosting, GitHub Pages) is done;
-the "10x expansion" (six-wave plan, see below) is in progress — Waves 1–5 (audio;
-lighting/materials/atmosphere; particles/weather; terrain depth; economy depth)
-delivered, Wave 6 (the last one) planned but not built.
+Last updated: 2026-07-01. Phase 4 is fully done; Phase 5 (hosting, GitHub Pages) is
+done; the "10x expansion" (six-wave plan, see below) is **fully delivered** — all six
+waves (audio; lighting/materials/atmosphere; particles/weather; terrain depth; economy
+depth; upgrade branching) shipped and verified. Nothing is currently in progress —
+Phase 6's original stretch goals (procedural regions, rival AI) are the only remaining
+item, and they're genuinely open-ended new-breadth work, not a scoped next step.
 
 Read [PLAN.md](PLAN.md) first for roadmap/status. This doc is the "how it works and
 why" for whoever (human or Claude) picks this project up next.
@@ -89,7 +91,14 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   `this.towers.length`; `spanStormWeight(record)` / `pickWeightedStormTarget(candidates)`
   for terrain-weighted storm selection, called from `triggerStorm()` in place of the old
   uniform `Math.random()` pick; and the free function `randomStormDelayMs(energizedCount)`
-  (was zero-arg) now scales both interval bounds toward `STORM.minIntervalFloorSec`.
+  (was zero-arg) now scales both interval bounds toward `STORM.minIntervalFloorSec`. And
+  (Wave 6) `onKeyDown` now recognizes both `U` and `I`, routing through a new
+  `handleUpgradeKey(tower, keyBranch)` that branches on the tower's *current tier* (not
+  just `canUpgrade()`'s boolean) to decide what each key actually does — `trySpendUpgrade`
+  factors out the shared afford-check/spend/upgrade/sound/save sequence both paths need.
+  `spanStormWeight` gained the Resilience check (multiplicative on top of the marsh
+  check, not a replacement). `save()`/`loadSavedGame()` both thread the new optional
+  `branch` through to/from `Tower`.
 - **`CameraRig.ts`** — fixed-angle orthographic isometric camera. Never rotates.
   Right-drag pans (pointerdown/move/up gated on `button === 2`) directly/1:1 — easing an
   active drag would feel laggy, so pan is intentionally *not* eased. Scroll wheel sets a
@@ -159,7 +168,17 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   `this.group` and sets `castShadow = true` on every mesh — done on the `Tower` instance
   itself, not inside the shared `buildTowerVisual` factory, so the semi-transparent
   hover-ghost (which also calls `buildTowerVisual`) doesn't cast a full shadow of a
-  tower that isn't actually placed yet.
+  tower that isn't actually placed yet. And (Wave 6) a `branch: TowerBranch | null`
+  field (`TowerBranch = 'capacity' | 'resilience'`), `getBranch()`, and `capacity()`
+  now adds `ECONOMY.tier3CapacityBonus` on top of the tier-3 base when
+  `branch === 'capacity'`. `TIER_ARMS` shrank to just the universal tier-1→2 entry; a
+  new `TIER3_BRANCH_ARMS` record supplies the tier-2→3 arm shape(s) per branch (one wide
+  arm for Capacity, two stacked arms for Resilience — geometry-only differentiation, no
+  new colors). `addArmForTier(tier, branch?)` and `upgrade(branch?)` both gained an
+  optional branch parameter (ignored below tier 2); `materializeFromSave` gained a
+  fourth optional `branch` parameter, applied only when `tier >= 3`, and defaults to
+  `null` gracefully (no crash) if a tier-3 tower's save data has no branch — the exact
+  shape a pre-Wave-6 save would have.
 - **`catenary.ts`** — pure math, no scene dependency beyond `THREE.Vector3` for the
   return type. `computeCatenaryPoints(p1, p2, sagRatio, segments)` solves the catenary
   parameter `a` via Newton's method (parabolic initial guess) and samples points along
@@ -202,6 +221,11 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   `ECONOMY.towerCostGrowthPerTower` and `STORM.minIntervalFloorSec`/
   `intervalHalfLifeSpanCount`/`marshWeightMultiplier` (Wave 5) are all pure tuning
   values — no schema/persistence impact, same pattern as every other constant here.
+  `ECONOMY.towerUpgradeCost` (Wave 6) restructured from an array of two flat costs to a
+  named object (`{ linear, capacity, resilience }`) — cleaner than a mixed-shape array
+  with an `as`-cast at the tier-2 index, and every access site now reads a named branch
+  rather than indexing by `tier - 1`. `ECONOMY.tier3CapacityBonus` and
+  `STORM.resilienceWeightMultiplier` are new pure tuning values alongside it.
 - **`Economy.ts`** (Phase 2) — tiny state holder for `capEx` and `crewHours`.
   `canAfford(capExCost, crewHoursCost)`, `spend(...)`, and `tick(dt, energizedSpanCount)`
   which adds passive CapEx income (per energized span per second) and regenerates
@@ -231,7 +255,10 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   `null`, never a wire format they have to defensively unwrap themselves. Deliberately
   does not validate individual tower/span entries (grid bounds, tier ranges) — that's
   `Game.loadSavedGame()`'s job, since `Grid`/`ECONOMY` constants live in game code, not
-  here.
+  here. `SaveData.towers[]` gained one optional field (Wave 6): `branch?: 'capacity' |
+  'resilience'` — a literal union inlined here rather than importing `TowerBranch` from
+  `Tower.ts`, keeping this module's dependency direction one-way (game code depends on
+  persistence, not the reverse). `SAVE_VERSION` stayed at 1 — purely additive.
 - **`SoundManager.ts`** (Wave 1, new) — procedural Web Audio, no audio asset files. See
   the "10x expansion — Wave 1" section below for the full design and per-sound synthesis
   notes; the short version: `unlock()` lazily creates the `AudioContext` on first user
@@ -639,7 +666,7 @@ noted as a known gap below, not a confirmed problem. The deployed bundle is othe
 identical to what Wave 2 already verified running correctly locally; only the base URL
 path differs, and that's confirmed correct at the asset-serving level.
 
-## "10x expansion"
+## "10x expansion" (complete — all six waves delivered)
 
 Not a numbered roadmap phase — the user asked to "10x the graphics and mechanics," a
 deliberately huge, open-ended request, bigger in scope than any single phase so far.
@@ -649,9 +676,13 @@ implementing after an ambiguity check) — direction was confirmed via direct qu
 *before* any design work, then a Plan agent was used to pressure-test a six-wave
 breakdown and work out concrete technical designs for the two areas with zero existing
 precedent in this codebase (audio, particles). The full approved plan lives at
-`/Users/samgumble/.claude/plans/fancy-wandering-dawn.md` — read it for the complete
-wave-by-wave breakdown (Waves 2-6 aren't repeated in full here to avoid the two docs
-drifting out of sync; this section covers what's actually been *built* so far).
+`/Users/samgumble/.claude/plans/fancy-wandering-dawn.md` — it's now fully implemented;
+this section documents what was actually *built*, wave by wave, including a few places
+where the real implementation deviated in small ways from the plan's exact literal
+wording once it was actually being written (e.g. Wave 6's `towerUpgradeCost` shape, and
+where the branch-selection logic actually ended up living) — the plan got the direction
+right every time, these were just implementation-detail judgment calls made while
+writing real code against it.
 
 **Confirmed direction** (do not re-litigate without asking again): graphics go **deeper
 within** the established SCADA/blueprint low-poly style, not a stylistic pivot toward
@@ -960,6 +991,86 @@ by not pausing `renderer.setAnimationLoop` before mutating live arrays. Fixed by
 verification pass, and documented here so it isn't relearned the hard way again. `tsc
 --noEmit` clean throughout; no console errors.
 
+### Wave 6 — Upgrade tree branching (delivered)
+
+**This was the last wave — the "10x expansion" is now complete.** Implemented exactly
+to the plan's scope: tier 1→2 stays universal (`U`); at tier 2, `U` continues to mean
+the default/primary upgrade (now specifically the Capacity branch) while a new `I` key
+means Resilience — chosen so existing `U`-to-upgrade muscle memory keeps working
+unchanged at every tier, and `I` is purely an additional option layered on top, never a
+required one.
+
+- **`Tower.canUpgrade()` stayed a simple boolean** (`tier < towerMaxTier`) — the plan
+  flagged this as needing to become branch-aware, but the actual branch logic turned out
+  to belong in `Game.handleUpgradeKey()` instead: `canUpgrade()` still answers "can this
+  tower upgrade at all" (used as a tier gate), and a separate `if (tier === 1) / else`
+  inside `handleUpgradeKey` decides what each key means at the current tier. Keeping
+  `Tower`'s API simple and putting the branch-selection policy in `Game` (which already
+  owns all the other upgrade-cost/HUD-text logic) felt like the right seam once actually
+  writing it, even though the plan's instinct that *something* needed restructuring was
+  correct.
+- **Capacity**: `ECONOMY.tier3CapacityBonus = 2` on top of the shared tier-3 base (6),
+  giving 8 total. **Resilience**: `STORM.resilienceWeightMultiplier = 0.4` applied
+  multiplicatively in `spanStormWeight` alongside (not instead of) Wave 5's marsh
+  weighting — a resilient tower on marsh is safer than average, not immune, which felt
+  like the more honest simulation than an on/off immunity flag.
+- **Visual branching stayed geometry-only**: `TIER3_BRANCH_ARMS` gives Capacity one wide
+  arm, Resilience two stacked ones, both from the same `BoxGeometry` primitive already
+  used everywhere else on the tower — no new colors, same discipline as terrain tints
+  and Phase 4's insulator details.
+- **Schema**: one optional field, `branch?: 'capacity' | 'resilience'`, meaningful only
+  at tier 3. `Tower.materializeFromSave` degrades gracefully (not a crash) if a tier-3
+  tower's save has no branch — it applies whatever arms the loop *can* build (just the
+  tier-1→2 arm) and sets `branch = null`, rather than throwing or guessing a default.
+  This is the correct behavior for a genuinely pre-Wave-6 save, which by construction
+  never had a branch to restore in the first place.
+
+**Verification produced several false alarms — worth recording in full, since none were
+actual bugs and the debugging process itself is reusable next time:**
+
+1. A capacity-fill test on a *second* Resilience tower returned "2 remaining" instead of
+   the expected 6 — because that specific tower still had 4 connections left over from
+   an earlier, different test that was never cleaned up. Not a bug; a fresh tower
+   confirmed exactly 6.
+2. A weight check on a Resilience-branch span returned exactly `1` instead of the
+   expected `0.4` — a genuine coincidence: that particular span *also* had a marsh
+   endpoint from leftover state, and `2.5 × 0.4 = 1.0` exactly, deceptively identical to
+   "no modifier at all." Confirmed via a `console.log`-instrumented temporary debug pass
+   (then removed) that the real math is `marshWeight × resilienceWeight`, multiplicative
+   as designed — isolating a guaranteed-flat-terrain span showed the true `0.4` cleanly.
+3. **The non-negotiable softlock check initially failed** — 300 forced storms against
+   what was assumed to be a single energized span produced real strikes. Root cause:
+   `g.spans` silently had 6 entries, not 2 — leftover from *multiple* prior test blocks
+   across this long session, several of which apparently were still energized at the
+   start. The fix wasn't to the game code; it was to stop trusting assumed-clean state
+   and explicitly zero out `towers`/`spans` in memory (not just via `localStorage.clear()`
+   + reload) before any test that depends on an exact candidate count. Once genuinely
+   verified clean (`spanCount: 1, energizedCount: 1`), 300 forced attempts produced zero
+   strikes — the invariant holds.
+4. **A new, generalizable environment gotcha**: injecting a synthetic save via
+   `localStorage.setItem(...); location.reload();` got silently overwritten twice before
+   working, both times by the *real* `Game` instance's own `beforeunload` handler firing
+   during the reload and re-saving the actual in-memory state over the injected one —
+   the same class of race already documented for the `Shift+R` reset hotkey, but
+   triggered here by `location.reload()` rather than a deliberate reset. Fixed by setting
+   `game['isResetting'] = true` (the private flag `save()` already checks) before
+   injecting a save and reloading. Worth remembering for any future test that needs to
+   inject specific save data: pause the loop *and* set `isResetting`, not just one or the
+   other.
+
+Once test methodology accounted for all four of the above, every real check passed
+cleanly: fresh-tower capacity exactly 8 vs. 6; mesh counts exactly 8 vs. 9 (matching the
+1-arm/2-arm visual design); Resilience weighting at 2.44:1 against a 2.5:1 expectation
+over 3000 samples on verified-flat terrain; the softlock invariant holding over 300
+forced attempts on a verified single-candidate state; `I` at tier 1 confirmed a true
+no-op (no deny, no state change); `U`/`I` at tier 3 confirmed denying correctly with no
+CapEx spent; a full save→reload round-trip confirming a tier-3 Resilience tower restores
+its branch and visual correctly; and a synthetic pre-Wave-6 save (tier-3, no `branch`
+field at all) loading without error, exactly as the plan's verification checklist
+required. `tsc --noEmit` clean throughout; no console errors at any point (the temporary
+debug `console.log` calls added mid-investigation were removed before this was
+considered done).
+
 ## Skills used this session
 
 - `design-game-design-fundamentals` — shaped the action→feedback→reward pacing
@@ -1028,7 +1139,8 @@ working, Wave 1: see the "10x expansion — Wave 1" section above. Confirmed wor
 Wave 2: see the "10x expansion — Wave 2" section above. Confirmed working, Wave 3: see
 the "10x expansion — Wave 3" section above. Confirmed working, Wave 4: see the "10x
 expansion — Wave 4" section above. Confirmed working, Wave 5: see the "10x expansion —
-Wave 5" section above. No automated tests exist yet.
+Wave 5" section above. Confirmed working, Wave 6 (the last one): see the "10x expansion
+— Wave 6" section above. No automated tests exist yet.
 
 A temporary debug hook (`window.__game`) was added each phase to get exact screen
 coordinates for synthetic clicks or to call internal methods directly, then removed
@@ -1096,8 +1208,6 @@ trust wall-clock `sleep` alone to advance game time.
   (no exceptions, correct event timing via console/state inspection), since this tool
   chain can't actually hear sound. Treat the synthesis design as unvalidated-by-ear
   until you've played with sound on.
-- Wave 6 of the "10x expansion" (upgrade-tree branching — the last wave) is planned in
-  full at `/Users/samgumble/.claude/plans/fancy-wandering-dawn.md` but not yet built.
 - Marsh's threshold/cost-multiplier values (`TERRAIN.marshThreshold = -0.55`,
   `marshCostMultiplier = 2.1`) are first-pass, chosen to produce a reasonable-looking
   distribution (61/441 nodes) and a cost that reads as "pricier than a hill" — not
@@ -1112,6 +1222,16 @@ trust wall-clock `sleep` alone to advance game time.
   tuned by eye against screenshots taken via the synthetic-clock technique described in
   Wave 3's verification notes — not validated against a real, unpaused, real-time storm.
   Worth watching the next time a storm fires naturally during real play.
+- Wave 6's branch costs/bonuses (`tier3CapacityBonus = 2`, `resilienceWeightMultiplier
+  = 0.4`, and the small CapEx/Crew-Hours cost delta between the two branches) are
+  first-pass and unplaytested for whether Capacity and Resilience actually feel like a
+  real trade-off rather than one branch being an obvious dominant strategy — the kind of
+  thing that only shows up once a player has actually played through several tier-3
+  upgrades under real storm pressure, not from the statistical checks performed here.
+- The "10x expansion" is now fully delivered (all six waves) but has never been played
+  end-to-end as one continuous session by a human — each wave was verified in isolation
+  immediately after building it. Worth a real full playthrough before treating any of
+  the tuning constants introduced across Waves 1-6 as settled.
 - Fault sparks and placement dust are visually distinct in isolated tests but haven't
   been seen firing "in the wild" back-to-back with everything else happening on
   screen (bloom, an active storm's rain, the fault alarm) — no reason to expect a
