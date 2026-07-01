@@ -363,15 +363,43 @@ and pole models that visually show more lines as they upgrade.
    shadow traversal only runs once, before any upgrades happen) — now set explicitly
    per mesh as each arm is built.
 
+## More depth on existing systems (delivered)
+
+You asked to keep building out the game; given the roadmap's only remaining item
+(Phase 6 stretch goals) was flagged as open-ended new-breadth work rather than a scoped
+next step, this picked two concrete, already-documented gaps to close instead —
+deepening terrain and storms, not adding new systems.
+
+1. **Terrain-weighted span cost.** Previously only tower *placement* cost was
+   terrain-aware; stringing a line across rough terrain cost the same as flat ground.
+   Now a span with either endpoint on a hill or marsh costs more Crew-Hours to string
+   (`ECONOMY.spanHillMultiplier = 1.25`, `spanMarshMultiplier = 1.4` — deliberately
+   smaller than the placement multipliers, since these scale an already distance-based
+   Crew-Hours cost rather than a flat one-time CapEx cost). If the two endpoints differ,
+   the higher multiplier applies — not stacked. Verified exactly against the real spend
+   through `tryStringSpan`, not just the multiplier function in isolation.
+2. **Storm warning telegraph.** Storms previously struck with zero warning. Now a low
+   audio rumble plus a steady (non-blinking, to stay visually distinct from an active
+   fault) HUD line reading "STORM ROLLING IN" fires once, `STORM.warningLeadSec = 4`
+   seconds before each storm check — a heads-up that weather is approaching, not a
+   promise a strike will land, since candidates for the actual strike still aren't
+   picked until the check itself fires. Verified with a synthetic clock (avoiding real
+   wall-clock waits): correctly silent outside the window, fires exactly once per storm
+   cycle (not every frame), and correctly clears the instant the check resolves.
+
+Both `GUIDE.md` and the docs here were updated alongside the code, per the standing
+"keep the guide/docs current" instructions.
+
 ## Up next
 
 The "10x expansion" is complete — all six waves (audio; lighting/materials/atmosphere;
 particles/weather; terrain depth; economy depth; upgrade branching) are delivered and
-verified, plus the player guide and upgraded pole visuals above. Nothing is currently in
-progress. The only work still explicitly on the books is Phase 6's original stretch
-goals (procedural regions, a rival AI utility) — genuinely open-ended new-breadth
-features, not a scoped next step. Before picking either up, worth a real playtest of
-everything shipped so far — several tuning constants across Waves 4-6 (marsh thresholds,
-cost curve, storm weighting, branch costs) are verified *correct* but not yet validated
-as *fun*, and audio has never been heard by a human. See HANDOVER.md's "Known gaps"
-section for the full unvalidated-by-play list.
+verified, plus the player guide, upgraded pole visuals, and the two depth additions
+above. Nothing is currently in progress. The only work still explicitly on the books is
+Phase 6's original stretch goals (procedural regions, a rival AI utility) — genuinely
+open-ended new-breadth features, not a scoped next step. Before picking either up, worth
+a real playtest of everything shipped so far — several tuning constants (marsh
+thresholds, cost curve, storm weighting, branch costs, the two new span/warning
+constants above) are verified *correct* but not yet validated as *fun*, and audio has
+never been heard by a human. See HANDOVER.md's "Known gaps" section for the full
+unvalidated-by-play list.

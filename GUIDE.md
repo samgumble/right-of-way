@@ -18,7 +18,7 @@ Two resources, shown top-left:
 - **CapEx** — capital. Earned passively from every energized line, every second. Spent on placing towers.
 - **Crew-Hours** — labor. Regenerates on its own up to a cap. Spent on stringing lines and upgrading towers.
 
-Placing towers gets pricier as your network grows — each tower already on the board adds a little to the cost of the next one. Terrain multiplies that cost further (see below). Stringing a line costs Crew-Hours, scaled by how far apart the two towers are — short hops are cheap, long ones add up.
+Placing towers gets pricier as your network grows — each tower already on the board adds a little to the cost of the next one. Terrain multiplies that cost further (see below). Stringing a line costs Crew-Hours, scaled by how far apart the two towers are — short hops are cheap, long ones add up. Terrain matters here too: a line with an end on a hill or marsh costs more Crew-Hours to string than the same line over flat ground.
 
 If you can't afford something, the attempted action shakes and denies instead of going through.
 
@@ -27,8 +27,8 @@ If you can't afford something, the attempted action shakes and denies instead of
 The ground isn't uniform. Four types, all rendered as tinted patches:
 
 - **Flat** — no modifier, the default.
-- **Hill** — buildable, but towers cost more here (steeper installation).
-- **Marsh** — buildable, costs even more than a hill (soft, unstable ground needs more reinforcement). Marsh ground is also more storm-prone — lines with an end on marsh get struck more often.
+- **Hill** — buildable, but towers cost more here (steeper installation), and lines strung to a hilltop tower cost more Crew-Hours too.
+- **Marsh** — buildable, costs even more than a hill for both towers and lines (soft, unstable ground needs more reinforcement). Marsh ground is also more storm-prone — lines with an end on marsh get struck more often.
 - **Water** — not buildable at all.
 
 Hover the ground before clicking to see the placement preview change opacity based on whether you can currently afford it.
@@ -37,6 +37,7 @@ Hover the ground before clicking to see the placement preview change opacity bas
 
 Storms strike periodically and fault a random energized line, turning it red with a pulsing alarm. A faulted line stops earning CapEx until repaired.
 
+- A few seconds before each storm check, you get a warning — a low rumble and a **STORM ROLLING IN** line in the HUD. It's a heads-up that weather is approaching, not a promise something will actually be hit — whether a strike lands (and what it hits) is still decided at the moment the storm actually arrives.
 - **Click a faulted (red) line** to repair it, for a flat CapEx + Crew-Hours cost.
 - Storms get more frequent as your network grows, but never faster than a hard floor — the game won't spiral into constant storms no matter how big you get.
 - Storms never strike your *only* energized line, and never strike at all until your network has had time to establish itself. You can't be wiped out by an unlucky first storm.
@@ -71,8 +72,9 @@ Higher tiers visibly grow more cross-arms and insulator strings lower on the sha
 ## Reading the HUD
 
 - **Top-left panel** — CapEx and Crew-Hours, live.
+- **Red line (blinking)** — appears only when something's faulted, with a live fault count and repair cost.
+- **Red line (steady)** — a storm warning: weather's rolling in, a check is imminent. Not blinking, so you can always tell it apart from a real, active fault.
 - **Orange line** — context for whatever's currently selected (a tower's tier, upgrade options and costs).
-- **Red line** — appears only when something's faulted, with a live fault count and repair cost.
 - **Dim line** — an onboarding hint for your first few actions. It stops appearing once you've placed two towers and strung a line, and never comes back.
 
 Your progress autosaves continuously — closing the tab and coming back picks up right where you left off.

@@ -89,6 +89,14 @@ canvas {
   animation: none;
 }
 
+/* Reuses fault-red — thematically a storm's the same danger, just not realized yet —
+   but steady, not blinking, so it never reads as an active fault. */
+.hud-note--warning {
+  color: #c0453a;
+  border-color: #c0453a;
+  opacity: 0.8;
+}
+
 .hud-note--hint {
   color: #8fa8bd;
   border-color: #2a4a5e;

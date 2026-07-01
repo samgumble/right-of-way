@@ -255,6 +255,32 @@ export class SoundManager {
     }
   }
 
+  /** A low, slow-building rumble a few seconds before a storm check — distinct from
+   * `playStormStrike()`'s sharp crack, meant to read as "weather rolling in," not
+   * impact. */
+  playStormWarning(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    this.tone({
+      freq: 90,
+      endFreq: 65,
+      type: 'sine',
+      start: now,
+      duration: 0.9,
+      peak: 0.22,
+      filterFreq: 300,
+      filterType: 'lowpass',
+    });
+    this.noiseBurst({
+      start: now,
+      duration: 0.7,
+      peak: 0.08,
+      filterType: 'lowpass',
+      filterFreq: 200,
+    });
+  }
+
   playStormStrike(): void {
     const ctx = this.ctx;
     if (!ctx) return;

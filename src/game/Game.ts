@@ -92,6 +92,11 @@ export class Game {
   private lastSave = performance.now();
   private isResetting = false;
   private nextStormAt = performance.now() + STORM.firstStrikeDelaySec * 1000;
+  /** The `nextStormAt` value the warning cue has already fired for — reset implicitly
+   * every time `triggerStorm` reschedules `nextStormAt`, so the cue fires exactly once
+   * per storm cycle rather than every frame during the warning window. */
+  private lastStormWarningFor: number | null = null;
+  private stormWarningActive = false;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -361,6 +366,21 @@ export class Game {
     }
   }
 
+  /** Stringing a span across rough terrain costs more Crew-Hours, not just more for raw
+   * distance — mirrors `Grid.towerCostMultiplier`'s hill/marsh treatment but with its
+   * own (smaller) multipliers since this scales a variable, distance-based Crew-Hours
+   * cost rather than a flat one-time CapEx cost. Takes the higher of the two endpoints'
+   * multipliers, not stacked — a span is as hard to string as its harder end. */
+  private spanTerrainMultiplier(a: Tower, b: Tower): number {
+    const factor = (tower: Tower): number => {
+      const terrain = this.grid.terrainAt(tower.gridI, tower.gridJ);
+      if (terrain === 'marsh') return ECONOMY.spanMarshMultiplier;
+      if (terrain === 'hill') return ECONOMY.spanHillMultiplier;
+      return 1;
+    };
+    return Math.max(factor(a), factor(b));
+  }
+
   private tryStringSpan(a: Tower, b: Tower): boolean {
     const key = [a.gridI, a.gridJ, b.gridI, b.gridJ].sort().join('|');
     if (this.spannedPairs.has(key)) {
@@ -382,7 +402,8 @@ export class Game {
     }
 
     const distance = a.topPos.distanceTo(b.topPos);
-    const crewCost = ECONOMY.spanCostBase + distance * ECONOMY.spanCostPerUnitDistance;
+    const crewCost =
+      (ECONOMY.spanCostBase + distance * ECONOMY.spanCostPerUnitDistance) * this.spanTerrainMultiplier(a, b);
     if (!this.economy.canAfford(0, crewCost)) {
       a.denyFeedback();
       b.denyFeedback();
@@ -452,6 +473,20 @@ export class Game {
       this.save();
     }
     this.nextStormAt = now + randomStormDelayMs(candidates.length);
+  }
+
+  /** Fires the warning cue exactly once per storm cycle, `STORM.warningLeadSec` before
+   * the check — a heads-up that a storm check is imminent, not a guarantee anything
+   * will actually be struck (that's still gated on `minEnergizedSpansToStrike` inside
+   * `triggerStorm`, and the weighted target isn't picked until then either). Must run
+   * before `triggerStorm` reschedules `nextStormAt` in the same tick, since it reads
+   * the *current* value. */
+  private updateStormWarning(now: number): void {
+    this.stormWarningActive = now >= this.nextStormAt - STORM.warningLeadSec * 1000;
+    if (this.stormWarningActive && this.lastStormWarningFor !== this.nextStormAt) {
+      this.lastStormWarningFor = this.nextStormAt;
+      this.sound.playStormWarning();
+    }
   }
 
   private deselect(): void {
@@ -594,6 +629,7 @@ export class Game {
       repairCapEx: STORM.repairCost.capEx,
       repairCrewHours: STORM.repairCost.crewHours,
       hint: this.computeOnboardingHint(),
+      stormWarning: this.stormWarningActive,
     });
   }
 
@@ -700,6 +736,7 @@ export class Game {
 
     this.economy.tick(dt, energizedCount);
 
+    this.updateStormWarning(now);
     if (now >= this.nextStormAt) this.triggerStorm(now);
 
     this.updateRain(now, dt);

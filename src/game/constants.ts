@@ -34,6 +34,14 @@ export const ECONOMY = {
   towerCostGrowthPerTower: 0.06,
   spanCostBase: 10,
   spanCostPerUnitDistance: 0.6,
+  /** Span cost multiplier when either endpoint tower sits on rough terrain — stringing
+   * a line across a hill or marsh takes more labor, not just more distance. Distinct
+   * from (and deliberately smaller than) `TERRAIN.hillCostMultiplier`/
+   * `marshCostMultiplier`, since those apply to a flat one-time CapEx cost while these
+   * apply to a variable, already distance-scaled Crew-Hours cost. If a span's two
+   * endpoints sit on different terrain, the higher multiplier applies — not stacked. */
+  spanHillMultiplier: 1.25,
+  spanMarshMultiplier: 1.4,
   towerMaxTier: 3,
   /** Connection capacity per tier, indexed by (tier - 1). Tier 3's value here is the
    * Resilience-branch (and pre-Wave-6) capacity; the Capacity branch adds
@@ -56,9 +64,9 @@ export const DENY_SHAKE_DURATION_MS = 260;
 export const TERRAIN = {
   hillCostMultiplier: 1.6,
   /** Marsh sits between water and flat — soft, unstable ground, buildable but pricier
-   * than a hill. Also the terrain Wave 5's storm-target weighting will read from
-   * (wet/unstable ground skewing more storm-prone) — not implemented yet, this just
-   * creates the classification for it to use later. */
+   * than a hill. Also the terrain storm-target weighting reads from
+   * (`STORM.marshWeightMultiplier`, Wave 5) — wet/unstable ground skews more
+   * storm-prone. */
   marshCostMultiplier: 2.1,
   /** Below this noise value a node is water (unbuildable). */
   waterThreshold: -0.9,
@@ -96,6 +104,11 @@ export const STORM = {
    * struck). Applied multiplicatively alongside marshWeightMultiplier, not instead of
    * it — a resilient tower on marsh is safer than average but not fully immune. */
   resilienceWeightMultiplier: 0.4,
+  /** How long before a storm check to fire a warning cue (audio + a HUD note) — a
+   * heads-up that weather is rolling in, not a promise a strike will actually land
+   * (candidates for the strike itself aren't picked until the check fires, so the
+   * warning can't target a specific span in advance). */
+  warningLeadSec: 4,
 } as const;
 
 export const PERMIT = {

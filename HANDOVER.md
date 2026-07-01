@@ -4,11 +4,12 @@ Last updated: 2026-07-01. Phase 4 is fully done; Phase 5 (hosting, GitHub Pages)
 done; the "10x expansion" (six-wave plan, see below) is **fully delivered** — all six
 waves (audio; lighting/materials/atmosphere; particles/weather; terrain depth; economy
 depth; upgrade branching) shipped and verified. Since then: an in-game player guide
-(`GUIDE.md`, opened via a `?` button) and pole visuals that scale with real connection
-capacity have also shipped — see "Player guide + upgraded pole visuals" below. Nothing
-is currently in progress — Phase 6's original stretch goals (procedural regions, rival
-AI) are the only remaining item, and they're genuinely open-ended new-breadth work, not
-a scoped next step.
+(`GUIDE.md`, opened via a `?` button), pole visuals that scale with real connection
+capacity, terrain-weighted span cost, and a storm warning telegraph have also shipped —
+see "Player guide + upgraded pole visuals" and "More depth on existing systems" below.
+Nothing is currently in progress — Phase 6's original stretch goals (procedural regions,
+rival AI) are the only remaining item, and they're genuinely open-ended new-breadth
+work, not a scoped next step.
 
 Read [PLAN.md](PLAN.md) first for roadmap/status. This doc is the "how it works and
 why" for whoever (human or Claude) picks this project up next.
@@ -104,7 +105,15 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   `branch` through to/from `Tower`. Also owns a `guide: Guide` field, constructed right
   alongside `hud`; `onKeyDown`'s very first line is now `if (this.guide.isOpen())
   return;`, gating every gameplay hotkey (including `Shift+R`) while the guide panel is
-  open.
+  open. And (depth pass) a new `spanTerrainMultiplier(a, b)` helper, called from
+  `tryStringSpan`'s crew-cost calculation — same "check `grid.terrainAt()` on both
+  endpoints, take the relevant multiplier" shape `spanStormWeight` already established,
+  just for cost instead of storm weighting. `nextStormAt`'s scheduling gained a sibling:
+  `lastStormWarningFor`/`stormWarningActive` fields and a new `updateStormWarning(now)`,
+  called every tick right before the existing `if (now >= this.nextStormAt)` check (and
+  reading the *pre-reschedule* `nextStormAt`, since `triggerStorm` mutates it later in
+  the same tick) — same "call it every frame, it internally no-ops" idiom
+  `updateFaultAlarm`/`updateRain`/`updateBursts` already use.
 - **`CameraRig.ts`** — fixed-angle orthographic isometric camera. Never rotates.
   Right-drag pans (pointerdown/move/up gated on `button === 2`) directly/1:1 — easing an
   active drag would feel laggy, so pan is intentionally *not* eased. Scroll wheel sets a
@@ -241,6 +250,8 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   with an `as`-cast at the tier-2 index, and every access site now reads a named branch
   rather than indexing by `tier - 1`. `ECONOMY.tier3CapacityBonus` and
   `STORM.resilienceWeightMultiplier` are new pure tuning values alongside it.
+  `ECONOMY.spanHillMultiplier`/`spanMarshMultiplier` and `STORM.warningLeadSec` (post-6x
+  depth pass) are the same — pure tuning, no schema impact.
 - **`Economy.ts`** (Phase 2) — tiny state holder for `capEx` and `crewHours`.
   `canAfford(capExCost, crewHoursCost)`, `spend(...)`, and `tick(dt, energizedSpanCount)`
   which adds passive CapEx income (per energized span per second) and regenerates
@@ -260,6 +271,10 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   "place a tower" → "place a second" → "string a span between them" → nothing, once
   `spans.length > 0`. No persistence needed — the underlying state it reads already is.
   Plain DOM (`innerHTML` + `querySelector`), no framework — not worth one for this much UI.
+  (Depth pass) a fourth `.hud-note` variant, `--warning`, sits between fault and
+  context: reuses fault-red (thematically the same danger, just not realized yet) but
+  without the blink animation, so it can never be mistaken for an active fault — same
+  base class, one CSS rule added, no new HUD architecture needed.
 - **`Guide.ts`** (new) — the first *interactive* DOM UI in the project (`Hud` is
   read-only). Unlike `Hud`'s `pointer-events: none` shell, `Guide` owns its own
   `pointer-events: auto` elements: a small `?` button (top-right) and a full-screen
@@ -306,7 +321,9 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   `GainNode` envelope and a `BiquadFilterNode`, and a shared `noiseBuffer` (one 2s buffer
   of `Math.random()`-generated white noise, built once) backs mechanical thunks,
   electrical crackle, and storm wind/rain via different filter shapes on the same
-  source.
+  source. (Depth pass) `playStormWarning()` — a low, slow-building rumble, deliberately
+  distinct from `playStormStrike()`'s sharp crack, meant to read as "weather rolling
+  in" rather than impact.
 - **`ParticleBurst.ts`** (Wave 3, new) — one class instance per burst *event* (not a
   shared pool/emitter system): each owns its own small `THREE.InstancedMesh` (8-16
   instances, styled by a `BurstStyle` key into `PARTICLE_BURST` — `'dust'` or
@@ -1167,6 +1184,61 @@ Verified by direct capacity-fill tests at all four tier/branch combinations (2/4
 each exactly matching the counted insulator meshes, not just eyeballed from a
 screenshot — the screenshot was a secondary confirmation, not the primary one.
 
+## More depth on existing systems
+
+You asked to "keep going with the build out." The roadmap's only remaining item (Phase
+6 stretch goals — procedural regions, a rival AI utility) was explicitly flagged as
+open-ended new-breadth work, not a scoped next step, so this round picked two concrete
+items directly off the "Known gaps" list below instead — real, already-identified gaps,
+not invented scope.
+
+- **Terrain-weighted span cost** — `Game.spanTerrainMultiplier(a, b)` checks
+  `grid.terrainAt()` on both tower endpoints and returns the higher of
+  `ECONOMY.spanHillMultiplier` (1.25) / `spanMarshMultiplier` (1.4) / `1`, applied to
+  `tryStringSpan`'s existing distance-based crew-cost formula. Deliberately smaller
+  multipliers than the placement-cost ones (`TERRAIN.hillCostMultiplier` 1.6 /
+  `marshCostMultiplier` 2.1) since these compound onto an already-variable Crew-Hours
+  cost rather than a flat one-time CapEx cost — stacking two "harsh terrain" penalties
+  of similar magnitude felt like it would double-punish rather than add real texture.
+  Not stacked between the two endpoints either — a span is only as hard to string as
+  its harder end, not both added together.
+- **Storm warning telegraph** — `Game.updateStormWarning(now)`, called every tick right
+  before the existing storm check, fires `SoundManager.playStormWarning()` and sets
+  `stormWarningActive = true` exactly once per storm cycle,
+  `STORM.warningLeadSec = 4` seconds before `nextStormAt`. Tracked via
+  `lastStormWarningFor` (the `nextStormAt` value already warned for) rather than a
+  simple boolean, so the cue can't re-fire every frame during the warning window but
+  correctly re-arms the instant `triggerStorm` reschedules `nextStormAt` for the next
+  cycle. Deliberately does **not** reveal or lock in which span will be struck — that's
+  still decided inside `triggerStorm` itself, at the moment the check actually fires,
+  so a player stringing a new span during the warning window doesn't create a stale
+  prediction. Visually, the HUD gained a fourth `.hud-note` variant reusing fault-red
+  without the blink animation — same danger family, but a player should never be able
+  to mistake "storm incoming" for "line already down."
+
+**A genuinely useful debugging lesson surfaced again during verification** (same class
+as Wave 5/6's): forcing `stormWarningActive = true` and taking a screenshot in *separate*
+tool calls produced an empty HUD line, because the real animation loop (never paused
+between those two calls) recomputed the true value on the very next frame and overwrote
+the forced state before the screenshot could capture it. Fixed the same way as before —
+pause `renderer.setAnimationLoop`, force the state, screenshot, all in one atomic call —
+and it worked immediately. This is now the third time this exact shape of mistake has
+shown up in this session; worth internalizing as a rule rather than re-discovering it a
+fourth time: **any manual state override for a visual check must happen in the same
+paused eval call as the render/screenshot that observes it.**
+
+**Verification:** span cost confirmed exactly via the multiplier function in isolation
+(1 / 1.25 / 1.4 for flat/hill/marsh pairs found by scanning the live terrain field) and
+then re-confirmed against the *real* spend through `tryStringSpan` (expected vs. actual
+Crew-Hours deducted matched to floating-point tolerance for both a flat and a hill
+pair). Storm warning confirmed via a synthetic clock: silent 5s before the window,
+active and HUD-visible 3.5s before, correctly not re-triggering the sound on a second
+call within the same window, and correctly cleared the instant `triggerStorm` resolves
+and reschedules. `playStormWarning()` confirmed to execute with no exception. `GUIDE.md`
+updated alongside both changes (Economy, Terrain, and Storms/repairs sections, plus the
+HUD reference), per the standing "keep the guide current" instruction. `tsc --noEmit`
+clean throughout; no console errors.
+
 ## Skills used this session
 
 - `design-game-design-fundamentals` — shaped the action→feedback→reward pacing
@@ -1239,8 +1311,9 @@ Wave 5" section above. Confirmed working, Wave 6 (the last one): see the "10x ex
 — Wave 6" section above. Confirmed working, player guide + pole visuals: see the
 dedicated section above — notably, the guide's button/close/backdrop *are* real DOM
 elements with stable CSS selectors, so `preview_click` worked directly on them (unlike
-the canvas, which needs synthetic events dispatched through `preview_eval`). No
-automated tests exist yet.
+the canvas, which needs synthetic events dispatched through `preview_eval`). Confirmed
+working, terrain-weighted span cost + storm warning telegraph: see the "More depth on
+existing systems" section above. No automated tests exist yet.
 
 A temporary debug hook (`window.__game`) was added each phase to get exact screen
 coordinates for synthetic clicks or to call internal methods directly, then removed
@@ -1287,13 +1360,15 @@ trust wall-clock `sleep` alone to advance game time.
 - No line-capacity/throughput upgrade track — only tower connection-capacity tiers
   exist. Could be added later as an independent upgrade axis if the economy needs more
   depth.
-- Storms have no warning telegraph — they strike instantly and unpredictably by design
-  (uncertainty is the point), but a brief "storm incoming" cue could be added later for
-  fairness/anticipation without changing the core mechanic.
-- Terrain now affects more than one-time placement cost — Wave 5's terrain-weighted
-  storm targeting reads `Grid.terrainAt()` on a span's endpoints. What's still true: span
-  *cost* itself isn't affected by terrain crossed, only raw distance (that specific gap
-  from the original list remains open; storm-targeting was the piece that got addressed).
+- **Closed**: storms now have a warning telegraph (the depth pass above) — a 4s
+  audio+HUD cue before each check. What's *not* affected is where/whether a strike
+  actually lands — uncertainty there is still deliberately the point.
+- **Closed**: terrain now affects placement cost, storm targeting (Wave 5), *and* span
+  cost (the depth pass above) — the original "span cost isn't affected by terrain"
+  gap no longer applies. What's still technically true, if anyone wants to split hairs
+  later: it's terrain at the two *endpoints*, not terrain literally crossed along the
+  catenary curve — consistent with how storm-weighting already worked, and a deliberate
+  simplification, not an oversight.
 - Permits can't be canceled/refunded once placed, and permitting is universal (no
   zone-specific variation) — both deliberate scope cuts for the first pass, see
   "Permitting" above for the reasoning.
@@ -1362,6 +1437,14 @@ trust wall-clock `sleep` alone to advance game time.
   mentioned in the guide itself would both need real touch-input rethinking. The whole
   project has been desktop-only so far; this doesn't change that, just flagging it
   explicitly now that there's a text-heavy overlay to consider.
+- `ECONOMY.spanHillMultiplier`/`spanMarshMultiplier` (1.25/1.4) and
+  `STORM.warningLeadSec` (4s) are first-pass — verified to *do what they're supposed to
+  do* (statistically/exactly confirmed above), not validated as *fun/well-paced* by real
+  play. Same caveat as every other tuning constant in this project.
+- The storm warning's 4-second lead time hasn't been felt in a real, unpaused storm
+  cycle by a human — only confirmed correct via a synthetic clock bypassing real wait
+  time. Worth noticing whether 4 seconds actually feels like "enough notice to react"
+  (e.g. rush to repair-fund a line) the next time a storm fires naturally during play.
 
 ## Maintenance note
 

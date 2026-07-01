@@ -7,6 +7,7 @@ export interface HudState {
   repairCapEx: number;
   repairCrewHours: number;
   hint: string;
+  stormWarning: boolean;
 }
 
 /** Minimal SCADA-style corner readout — a status meter, not a menu. */
@@ -15,6 +16,7 @@ export class Hud {
   private readonly crewEl: HTMLElement;
   private readonly contextEl: HTMLElement;
   private readonly faultEl: HTMLElement;
+  private readonly warningEl: HTMLElement;
   private readonly hintEl: HTMLElement;
 
   constructor(container: HTMLElement) {
@@ -26,6 +28,7 @@ export class Hud {
         <div class="hud-row"><span class="hud-label">CREW-HRS</span><span class="hud-value" data-crew></span></div>
       </div>
       <div class="hud-note hud-note--fault" data-fault></div>
+      <div class="hud-note hud-note--warning" data-warning></div>
       <div class="hud-note hud-note--context" data-context></div>
       <div class="hud-note hud-note--hint" data-hint></div>
     `;
@@ -35,6 +38,7 @@ export class Hud {
     this.crewEl = root.querySelector('[data-crew]')!;
     this.contextEl = root.querySelector('[data-context]')!;
     this.faultEl = root.querySelector('[data-fault]')!;
+    this.warningEl = root.querySelector('[data-warning]')!;
     this.hintEl = root.querySelector('[data-hint]')!;
   }
 
@@ -46,6 +50,7 @@ export class Hud {
       state.faultCount > 0
         ? `⚠ ${state.faultCount} FAULT${state.faultCount > 1 ? 'S' : ''} — click a red line to repair ($${state.repairCapEx} / ${state.repairCrewHours}h)`
         : '';
+    this.warningEl.textContent = state.stormWarning ? 'STORM ROLLING IN' : '';
     this.hintEl.textContent = state.hint;
   }
 }
