@@ -15,7 +15,7 @@ That's the whole interaction model. Nothing else needs a mode switch.
 
 Two resources, shown top-left:
 
-- **CapEx** — capital. Earned passively from every energized line, every second. Spent on placing towers.
+- **CapEx** — capital. Earned passively from every energized line, every second (more from a line whose throughput you've upgraded — see below). Spent on placing towers.
 - **Crew-Hours** — labor. Regenerates on its own up to a cap. Spent on stringing lines and upgrading towers.
 
 Placing towers gets pricier as your network grows — each tower already on the board adds a little to the cost of the next one. Terrain multiplies that cost further (see below). Stringing a line costs Crew-Hours, scaled by how far apart the two towers are — short hops are cheap, long ones add up. Terrain matters here too: a line with an end on a hill or marsh costs more Crew-Hours to string than the same line over flat ground.
@@ -57,6 +57,14 @@ Select a tower and press a key to upgrade it. Tier 1 towers support 2 lines; upg
 There's no picker menu — the HUD context line shows both options and their costs the moment a tier-2 tower is selected. Pick whichever fits the spot: a hub tower deep in your network probably wants Capacity; a tower anchoring a line across risky terrain probably wants Resilience.
 
 Higher tiers visibly grow more cross-arms and insulator strings lower on the shaft — the number of insulators you can see on a tower is always exactly how many lines it can carry. A maxed-out Capacity tower visibly bristles with connection points; a Resilience tower shows a reinforced double-arm instead of extra line capacity.
+
+## Upgrading lines
+
+Towers aren't the only thing that upgrades — individual lines do too, independently of the towers they connect.
+
+- **Click a healthy (green, energized) line** to try upgrading its throughput — same directness as clicking a faulted one to repair. No selection step, no menu: it either succeeds or shakes and denies.
+- Each upgrade costs CapEx and Crew-Hours, and boosts how much CapEx that specific line earns per second from then on — a real investment decision, since the payoff is spread out over time rather than immediate.
+- A line's thickness always tells you its tier — a thick cable is genuinely carrying more capacity, not just decorated to look that way.
 
 ## Camera
 

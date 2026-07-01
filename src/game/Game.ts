@@ -256,6 +256,7 @@ export class Game {
     const spanRecord = this.raycastSpan();
     if (spanRecord) {
       if (spanRecord.span.isFaulted()) this.tryRepairSpan(spanRecord);
+      else if (spanRecord.span.isEnergized()) this.tryUpgradeSpanThroughput(spanRecord);
       return;
     }
 
@@ -432,6 +433,30 @@ export class Game {
     }
     this.economy.spend(cost.capEx, cost.crewHours);
     record.span.repair();
+    this.save();
+  }
+
+  /** Clicking a healthy (energized, non-faulted) line tries to upgrade its throughput
+   * tier — same directness as clicking a faulted one to repair, no separate select
+   * step. Denies (shaking the two endpoint towers, same as every other span-level
+   * deny) at max tier or if unaffordable. */
+  private tryUpgradeSpanThroughput(record: SpanRecord): void {
+    if (!record.span.canUpgradeThroughput()) {
+      record.a.denyFeedback();
+      record.b.denyFeedback();
+      this.sound.playDeny();
+      return;
+    }
+    const cost = ECONOMY.spanThroughputCost[record.span.getThroughputTier() - 1];
+    if (!this.economy.canAfford(cost.capEx, cost.crewHours)) {
+      record.a.denyFeedback();
+      record.b.denyFeedback();
+      this.sound.playDeny();
+      return;
+    }
+    this.economy.spend(cost.capEx, cost.crewHours);
+    record.span.upgradeThroughput();
+    this.sound.playUpgrade(record.span.getThroughputTier());
     this.save();
   }
 
@@ -650,6 +675,7 @@ export class Game {
         a: [a.gridI, a.gridJ] as [number, number],
         b: [b.gridI, b.gridJ] as [number, number],
         faulted: span.isFaulted(),
+        throughputTier: span.getThroughputTier(),
       })),
       camera,
     });
@@ -688,10 +714,13 @@ export class Game {
         const a = byKey.get(`${s.a[0]},${s.a[1]}`);
         const b = byKey.get(`${s.b[0]},${s.b[1]}`);
         if (!a || !b) continue;
+        const throughputTier = Number.isFinite(s.throughputTier)
+          ? Math.min(Math.max(1, Math.round(s.throughputTier!)), ECONOMY.spanThroughputMaxTier)
+          : 1;
         a.addConnection();
         b.addConnection();
         const span = new Span(a.topPos, b.topPos);
-        span.materializeEnergized();
+        span.materializeEnergized(throughputTier);
         if (s.faulted) span.fault();
         this.spans.push({ span, a, b });
         this.scene.add(span.group);
@@ -723,18 +752,20 @@ export class Game {
       }
     }
 
-    let energizedCount = 0;
+    let capExIncomeRate = 0;
     let faultCount = 0;
     for (const { span } of this.spans) {
       const event = span.update(now);
       if (event === 'energized') this.sound.playEnergize();
       else if (event === 'repaired') this.sound.playRepair();
-      if (span.isEnergized()) energizedCount++;
+      if (span.isEnergized()) {
+        capExIncomeRate += span.incomeRate();
+      }
       if (span.isFaulted()) faultCount++;
     }
     this.sound.updateFaultAlarm(now, faultCount);
 
-    this.economy.tick(dt, energizedCount);
+    this.economy.tick(dt, capExIncomeRate);
 
     this.updateStormWarning(now);
     if (now >= this.nextStormAt) this.triggerStorm(now);

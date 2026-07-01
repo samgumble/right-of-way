@@ -57,6 +57,19 @@ export const ECONOMY = {
     capacity: { capEx: 300, crewHours: 60 },
     resilience: { capEx: 260, crewHours: 70 },
   },
+  /** A line's throughput can be upgraded independently of the towers it connects —
+   * click a healthy (energized, non-faulted) span to try, same directness as clicking
+   * a faulted one to repair. Indexed by (throughputTier - 1); tier 1 is the untouched
+   * base rate. Mostly CapEx-funded (a capital investment in future CapEx income),
+   * unlike tower upgrades which lean more Crew-Hours — reinforcing an existing line is
+   * closer to buying better cable than it is to a construction labor job. */
+  spanThroughputMultiplier: [1, 1.6, 2.2] as const,
+  spanThroughputMaxTier: 3,
+  /** Cost to upgrade FROM tier (index + 1) TO the next tier. */
+  spanThroughputCost: [
+    { capEx: 150, crewHours: 20 },
+    { capEx: 320, crewHours: 45 },
+  ],
 } as const;
 
 export const DENY_SHAKE_DURATION_MS = 260;

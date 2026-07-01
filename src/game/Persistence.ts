@@ -6,7 +6,7 @@ export interface SaveData {
   capEx: number;
   crewHours: number;
   towers: { i: number; j: number; tier: number; pendingMs?: number; branch?: 'capacity' | 'resilience' }[];
-  spans: { a: [number, number]; b: [number, number]; faulted?: boolean }[];
+  spans: { a: [number, number]; b: [number, number]; faulted?: boolean; throughputTier?: number }[];
   camera?: { x: number; z: number; zoom: number };
 }
 

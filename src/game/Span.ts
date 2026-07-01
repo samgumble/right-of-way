@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { computeCatenaryPoints } from './catenary';
-import { COLORS } from './constants';
+import { COLORS, ECONOMY } from './constants';
 
 function easeOutCubic(x: number): number {
   return 1 - Math.pow(1 - x, 3);
@@ -14,6 +14,10 @@ const ENERGIZE_DURATION = 650;
 const STRIKE_FLASH_DURATION = 220;
 const FAULT_PULSE_PERIOD = 1100;
 const TUBE_RADIUS = 0.09;
+/** Visible tube gets thicker per throughput tier — a literal, not decorative, cue
+ * (matches the pole-visuals precedent of a visual quantity always equaling a real
+ * game value). Indexed by (throughputTier - 1). */
+const TUBE_RADIUS_MULTIPLIER = [1, 1.35, 1.75];
 /** Wider invisible tube layered over the visible one, purely to make a thin 3D line clickable. */
 const HIT_RADIUS = 0.7;
 
@@ -34,6 +38,7 @@ export class Span {
   private faultStart = 0;
   private strikeFlashStart: number | null = null;
   private repairing = false;
+  private throughputTier = 1;
 
   constructor(p1: THREE.Vector3, p2: THREE.Vector3) {
     this.group = new THREE.Group();
@@ -73,8 +78,9 @@ export class Span {
       this.mesh.geometry.dispose();
     }
 
+    const radius = TUBE_RADIUS * TUBE_RADIUS_MULTIPLIER[this.throughputTier - 1];
     const curve = new THREE.CatmullRomCurve3(slice);
-    const geo = new THREE.TubeGeometry(curve, Math.max(1, count - 1), TUBE_RADIUS, 6, false);
+    const geo = new THREE.TubeGeometry(curve, Math.max(1, count - 1), radius, 6, false);
     this.mesh = new THREE.Mesh(geo, this.material);
     this.group.add(this.mesh);
   }
@@ -144,6 +150,29 @@ export class Span {
     return this.phase === 'faulted';
   }
 
+  getThroughputTier(): number {
+    return this.throughputTier;
+  }
+
+  canUpgradeThroughput(): boolean {
+    return this.throughputTier < ECONOMY.spanThroughputMaxTier;
+  }
+
+  /** CapEx/sec this span currently contributes — `Game` sums this across every
+   * energized span instead of using a flat per-span rate, so throughput tier actually
+   * matters. */
+  incomeRate(): number {
+    return ECONOMY.capExIncomePerSpanPerSec * ECONOMY.spanThroughputMultiplier[this.throughputTier - 1];
+  }
+
+  /** Bumps throughput one tier and immediately rebuilds the tube at its new (thicker)
+   * radius — no separate animation, the geometry change itself is the feedback. */
+  upgradeThroughput(): void {
+    if (!this.canUpgradeThroughput()) return;
+    this.throughputTier++;
+    this.rebuildGeometry(1);
+  }
+
   /** A storm strikes this span: goes fault-red and stops counting toward income until repaired. */
   fault(): void {
     if (this.phase !== 'energized') return;
@@ -164,9 +193,11 @@ export class Span {
     this.repairing = true;
   }
 
-  /** Skips the stringing/energizing animations and jumps straight to steady-state, for restored saves. */
-  materializeEnergized(): void {
+  /** Skips the stringing/energizing animations and jumps straight to steady-state, for
+   * restored saves. `throughputTier` defaults to 1 for pre-throughput-upgrade saves. */
+  materializeEnergized(throughputTier = 1): void {
     this.phase = 'energized';
+    this.throughputTier = throughputTier;
     this.rebuildGeometry(1);
     const color = new THREE.Color(COLORS.energizedGreen);
     this.material.color.copy(color);

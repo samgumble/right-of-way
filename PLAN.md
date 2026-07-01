@@ -42,6 +42,7 @@ hand-written catenary function, not Rapier.
 | — | "10x expansion" (out-of-roadmap, six-wave plan) | **Done** — all 6 waves, see below |
 | 5 | Deploy to hosting | **Done** — GitHub Pages, see below (superseded the original "Cloudflare Pages" placeholder) |
 | — | Player guide (in-game) + upgraded pole visuals (out-of-roadmap) | **Done** — see below |
+| — | More depth: span terrain cost, storm warning, line throughput (out-of-roadmap) | **Done** — see below |
 | 6 | Stretch: procedural regions, rival AI utility | Not started (audio and upgrade branching were pulled into the 10x expansion; procedural regions/rival AI remain open stretch goals) |
 
 ## Phase 1 scope (delivered)
@@ -387,6 +388,23 @@ deepening terrain and storms, not adding new systems.
    wall-clock waits): correctly silent outside the window, fires exactly once per storm
    cycle (not every frame), and correctly clears the instant the check resolves.
 
+3. **Line throughput upgrade.** CapEx income per span was previously flat regardless of
+   anything — now clicking a healthy (energized, non-faulted) line tries to upgrade its
+   throughput tier, same directness as clicking a faulted one to repair (no separate
+   select step). Three tiers (`ECONOMY.spanThroughputMultiplier = [1, 1.6, 2.2]`),
+   mostly CapEx-funded (`spanThroughputCost`), boosting that specific span's CapEx/sec
+   contribution — a real "invest now, earn more later" decision per line. Visually, the
+   conductor tube itself gets thicker per tier (`TUBE_RADIUS_MULTIPLIER = [1, 1.35,
+   1.75]`) — literal, not decorative, same discipline as the pole-visuals insulator
+   count. `Economy.tick()`'s signature changed from a flat energized-span *count* to a
+   pre-summed CapEx/sec *rate*, since income now varies per span — `Economy` itself
+   stays a dumb accumulator, unaware spans or tiers exist. New optional
+   `SaveData.spans[].throughputTier` field, defaulting to 1 for pre-feature saves.
+   Verified exactly (cost, income rate, and tube radius all matched formula predictions
+   precisely) through both direct calls and a real dispatched click, plus a full
+   persistence round-trip including a synthetic legacy save with no `throughputTier`
+   field at all.
+
 Both `GUIDE.md` and the docs here were updated alongside the code, per the standing
 "keep the guide/docs current" instructions.
 
@@ -394,12 +412,14 @@ Both `GUIDE.md` and the docs here were updated alongside the code, per the stand
 
 The "10x expansion" is complete — all six waves (audio; lighting/materials/atmosphere;
 particles/weather; terrain depth; economy depth; upgrade branching) are delivered and
-verified, plus the player guide, upgraded pole visuals, and the two depth additions
-above. Nothing is currently in progress. The only work still explicitly on the books is
+verified, plus the player guide, upgraded pole visuals, and the three depth additions
+above (terrain-weighted span cost, storm warning telegraph, line throughput upgrade).
+Nothing is currently in progress. The only work still explicitly on the books is
 Phase 6's original stretch goals (procedural regions, a rival AI utility) — genuinely
 open-ended new-breadth features, not a scoped next step. Before picking either up, worth
-a real playtest of everything shipped so far — several tuning constants (marsh
-thresholds, cost curve, storm weighting, branch costs, the two new span/warning
-constants above) are verified *correct* but not yet validated as *fun*, and audio has
-never been heard by a human. See HANDOVER.md's "Known gaps" section for the full
-unvalidated-by-play list.
+a real playtest of everything shipped so far — a real, growing list of tuning constants
+(marsh thresholds, cost curve, storm weighting, branch costs, span/warning/throughput
+numbers) are verified *correct* but not yet validated as *fun*, and audio has never been
+heard by a human. See HANDOVER.md's "Known gaps" section for the full unvalidated-by-play
+list — it's getting long enough that a real playtest is the highest-leverage thing to do
+next, more than any single additional feature.

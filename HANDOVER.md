@@ -5,11 +5,14 @@ done; the "10x expansion" (six-wave plan, see below) is **fully delivered** — 
 waves (audio; lighting/materials/atmosphere; particles/weather; terrain depth; economy
 depth; upgrade branching) shipped and verified. Since then: an in-game player guide
 (`GUIDE.md`, opened via a `?` button), pole visuals that scale with real connection
-capacity, terrain-weighted span cost, and a storm warning telegraph have also shipped —
-see "Player guide + upgraded pole visuals" and "More depth on existing systems" below.
-Nothing is currently in progress — Phase 6's original stretch goals (procedural regions,
-rival AI) are the only remaining item, and they're genuinely open-ended new-breadth
-work, not a scoped next step.
+capacity, terrain-weighted span cost, a storm warning telegraph, and a line throughput
+upgrade have also shipped — see "Player guide + upgraded pole visuals" and "More depth
+on existing systems" below. Nothing is currently in progress — Phase 6's original
+stretch goals (procedural regions, rival AI) are the only remaining item, and they're
+genuinely open-ended new-breadth work, not a scoped next step. **Worth flagging
+directly: the list of shipped-but-unplaytested tuning constants is now long enough that
+a real human playthrough is the single highest-leverage next step, ahead of any more
+building.**
 
 Read [PLAN.md](PLAN.md) first for roadmap/status. This doc is the "how it works and
 why" for whoever (human or Claude) picks this project up next.
@@ -113,7 +116,13 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   called every tick right before the existing `if (now >= this.nextStormAt)` check (and
   reading the *pre-reschedule* `nextStormAt`, since `triggerStorm` mutates it later in
   the same tick) — same "call it every frame, it internally no-ops" idiom
-  `updateFaultAlarm`/`updateRain`/`updateBursts` already use.
+  `updateFaultAlarm`/`updateRain`/`updateBursts` already use. And (line throughput) a new
+  `tryUpgradeSpanThroughput(record)`, called from `onClick`'s span branch as a third
+  sibling to the existing faulted/repair check — `else if
+  (spanRecord.span.isEnergized())` — same deny-shakes-the-two-endpoint-towers pattern
+  every other span-level deny already uses. `tick()`'s span loop now accumulates
+  `capExIncomeRate` (summing each energized span's own `incomeRate()`) instead of a flat
+  `energizedCount`, which is now itself dead and was removed rather than left unused.
 - **`CameraRig.ts`** — fixed-angle orthographic isometric camera. Never rotates.
   Right-drag pans (pointerdown/move/up gated on `button === 2`) directly/1:1 — easing an
   active drag would feel laggy, so pan is intentionally *not* eased. Scroll wheel sets a
@@ -238,7 +247,14 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   `midpoint(): THREE.Vector3` — returns the point at the middle index of the internal
   catenary `points` array, cloned. Added specifically so `Game.triggerStorm()` has an
   anchor for a fault-spark burst without `Span` exposing its full `points` array
-  (which stays private) to callers that only need one position.
+  (which stays private) to callers that only need one position. And (depth pass) a
+  `throughputTier` field (1-3): `TUBE_RADIUS_MULTIPLIER` scales the visible tube's
+  radius per tier (rebuilt immediately on `upgradeThroughput()` — no separate animation,
+  the geometry change *is* the feedback), `incomeRate()` returns
+  `ECONOMY.capExIncomePerSpanPerSec * ECONOMY.spanThroughputMultiplier[tier-1]` for
+  `Game.tick()` to sum across every energized span, and `materializeEnergized(tier = 1)`
+  threads it through persistence with the same "default to 1 for old saves" pattern
+  every other optional persisted field in this project uses.
 - **`constants.ts`** — all color/size/economy magic numbers live here: `COLORS`,
   `GRID`, `TOWER_HEIGHT`, `ECONOMY`, `DENY_SHAKE_DURATION_MS`, `TERRAIN`, `STORM`,
   `PERMIT` (Phase 3), `ATMOSPHERE`, `SHADOW` (Wave 2), `RAIN`, `PARTICLE_BURST` (Wave 3).
@@ -251,13 +267,20 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   rather than indexing by `tier - 1`. `ECONOMY.tier3CapacityBonus` and
   `STORM.resilienceWeightMultiplier` are new pure tuning values alongside it.
   `ECONOMY.spanHillMultiplier`/`spanMarshMultiplier` and `STORM.warningLeadSec` (post-6x
-  depth pass) are the same — pure tuning, no schema impact.
+  depth pass) are the same — pure tuning, no schema impact. `ECONOMY.spanThroughputCost`
+  followed the array-of-flat-costs shape (like `towerUpgradeCost` before Wave 6, since
+  span throughput has no branch choice to complicate it) rather than the named-object
+  shape — deliberately picked the simpler of the two established patterns since the
+  extra structure `towerUpgradeCost` needed wasn't needed here.
 - **`Economy.ts`** (Phase 2) — tiny state holder for `capEx` and `crewHours`.
-  `canAfford(capExCost, crewHoursCost)`, `spend(...)`, and `tick(dt, energizedSpanCount)`
-  which adds passive CapEx income (per energized span per second) and regenerates
-  Crew-Hours up to `crewHoursMax`. No events/observer pattern — `Game` just reads the
-  fields directly each frame since it already has a tick loop. `restore(capEx,
-  crewHours)` (persistence) sets both directly, clamping Crew-Hours to the max.
+  `canAfford(capExCost, crewHoursCost)`, `spend(...)`, and `tick(dt, capExIncomeRate)`
+  (renamed from `tick(dt, energizedSpanCount)` in the depth pass — see below) regenerate
+  Crew-Hours up to `crewHoursMax` and add whatever CapEx/sec rate the caller hands in.
+  No events/observer pattern — `Game` just reads the fields directly each frame since it
+  already has a tick loop. `restore(capEx, crewHours)` (persistence) sets both directly,
+  clamping Crew-Hours to the max. Deliberately still doesn't know `Span`/tiers/anything
+  exist — `Game.tick()` does the summing across spans and hands `Economy` one number,
+  keeping this class a dumb accumulator on purpose.
 - **`Hud.ts`** (Phase 2) — the first DOM UI in the project. A `position: fixed`,
   `pointer-events: none` overlay appended as a sibling of the canvas: a CapEx/Crew-Hours
   panel, a one-line contextual hint shown only when a tower is selected, and (Phase 3) a
@@ -314,6 +337,8 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   'resilience'` — a literal union inlined here rather than importing `TowerBranch` from
   `Tower.ts`, keeping this module's dependency direction one-way (game code depends on
   persistence, not the reverse). `SAVE_VERSION` stayed at 1 — purely additive.
+  `SaveData.spans[]` similarly gained `throughputTier?: number` (depth pass) — same
+  additive-only pattern, `SAVE_VERSION` still didn't need to move.
 - **`SoundManager.ts`** (Wave 1, new) — procedural Web Audio, no audio asset files. See
   the "10x expansion — Wave 1" section below for the full design and per-sound synthesis
   notes; the short version: `unlock()` lazily creates the `AudioContext` on first user
@@ -1186,11 +1211,11 @@ screenshot — the screenshot was a secondary confirmation, not the primary one.
 
 ## More depth on existing systems
 
-You asked to "keep going with the build out." The roadmap's only remaining item (Phase
-6 stretch goals — procedural regions, a rival AI utility) was explicitly flagged as
-open-ended new-breadth work, not a scoped next step, so this round picked two concrete
-items directly off the "Known gaps" list below instead — real, already-identified gaps,
-not invented scope.
+You asked to "keep going with the build out," twice in a row. The roadmap's only
+remaining item (Phase 6 stretch goals — procedural regions, a rival AI utility) was
+explicitly flagged as open-ended new-breadth work, not a scoped next step, so both
+rounds picked concrete items directly off the "Known gaps" list below instead — real,
+already-identified gaps, not invented scope.
 
 - **Terrain-weighted span cost** — `Game.spanTerrainMultiplier(a, b)` checks
   `grid.terrainAt()` on both tower endpoints and returns the higher of
@@ -1215,6 +1240,20 @@ not invented scope.
   prediction. Visually, the HUD gained a fourth `.hud-note` variant reusing fault-red
   without the blink animation — same danger family, but a player should never be able
   to mistake "storm incoming" for "line already down."
+- **Line throughput upgrade** (second round) — CapEx income per span was flat
+  regardless of anything; now clicking a healthy (energized, non-faulted) span tries to
+  upgrade its `throughputTier` (1-3, `ECONOMY.spanThroughputMultiplier = [1, 1.6, 2.2]`,
+  cost via `spanThroughputCost`) — same directness as clicking a faulted one to repair,
+  deliberately no separate select step to stay consistent with that existing precedent.
+  Required a real architectural change, not just a new constant: `Economy.tick()`'s
+  second parameter changed from a flat energized-span *count* to a pre-summed CapEx/sec
+  *rate*, since income now genuinely varies per span — computed by summing each
+  energized span's own `incomeRate()` inside `Game.tick()`'s existing per-span loop, so
+  `Economy` itself never needs to know spans or tiers exist. Visually, the tube gets
+  thicker per tier (`TUBE_RADIUS_MULTIPLIER = [1, 1.35, 1.75]`) — the same "a visual
+  quantity always equals a real game value" discipline the pole-visuals insulator count
+  already established, applied to a second system. New optional
+  `SaveData.spans[].throughputTier` field, defaulting to 1, additive-only.
 
 **A genuinely useful debugging lesson surfaced again during verification** (same class
 as Wave 5/6's): forcing `stormWarningActive = true` and taking a screenshot in *separate*
@@ -1238,6 +1277,27 @@ and reschedules. `playStormWarning()` confirmed to execute with no exception. `G
 updated alongside both changes (Economy, Terrain, and Storms/repairs sections, plus the
 HUD reference), per the standing "keep the guide current" instruction. `tsc --noEmit`
 clean throughout; no console errors.
+
+**Verification, line throughput (second round):** cost, income rate, and tube radius at
+each of the three tiers all matched formula predictions exactly (e.g. tier 3's
+`0.09 × 1.75 = 0.1575` tube radius read back precisely from the live geometry), both via
+direct method calls and via a real dispatched `pointermove`+`click` pair at a raycasted
+screen position — confirming the actual `onClick` → `tryUpgradeSpanThroughput` path, not
+just the underlying methods in isolation. Denial at max tier confirmed (tier and CapEx
+both unchanged after a third upgrade attempt). `Economy.tick()`'s new summed-rate
+behavior confirmed by manually computing the expected combined rate across two
+differently-tiered spans and checking the CapEx gain over a fixed `dt` matched exactly.
+Full persistence round-trip confirmed for two spans at different tiers (one of which was
+naturally faulted mid-session — a real storm fired during testing, not staged — and
+correctly retained its tier through the fault/repair-eligible state), plus a synthetic
+legacy save with no `throughputTier` field at all, confirming it defaults to 1 and loads
+without error. One more instance of the same recurring debugging lesson from immediately
+above: an early attempt set `isResetting = true` immediately before `save()` in the same
+call, not realizing `save()`'s very first line checks that exact flag and returns
+immediately — the "successful" save read back was actually stale data from an earlier
+autosave, not the call that appeared to produce it. Caught by noticing the values didn't
+change between two supposedly-different save attempts, not by any error message; fixed
+by reordering to save first, then set `isResetting`, then reload.
 
 ## Skills used this session
 
@@ -1312,8 +1372,8 @@ Wave 5" section above. Confirmed working, Wave 6 (the last one): see the "10x ex
 dedicated section above — notably, the guide's button/close/backdrop *are* real DOM
 elements with stable CSS selectors, so `preview_click` worked directly on them (unlike
 the canvas, which needs synthetic events dispatched through `preview_eval`). Confirmed
-working, terrain-weighted span cost + storm warning telegraph: see the "More depth on
-existing systems" section above. No automated tests exist yet.
+working, terrain-weighted span cost + storm warning telegraph + line throughput upgrade:
+see the "More depth on existing systems" section above. No automated tests exist yet.
 
 A temporary debug hook (`window.__game`) was added each phase to get exact screen
 coordinates for synthetic clicks or to call internal methods directly, then removed
@@ -1357,9 +1417,8 @@ trust wall-clock `sleep` alone to advance game time.
   zeroing out CapEx income entirely) is fixed, but repair cost, hill multiplier, storm
   interval, starting resources, and now the permit duration are all unvalidated by an
   actual human playtester.
-- No line-capacity/throughput upgrade track — only tower connection-capacity tiers
-  exist. Could be added later as an independent upgrade axis if the economy needs more
-  depth.
+- **Closed**: line throughput is now an independent upgrade axis (the depth pass
+  above), separate from tower connection-capacity tiers.
 - **Closed**: storms now have a warning telegraph (the depth pass above) — a 4s
   audio+HUD cue before each check. What's *not* affected is where/whether a strike
   actually lands — uncertainty there is still deliberately the point.
@@ -1445,6 +1504,20 @@ trust wall-clock `sleep` alone to advance game time.
   cycle by a human — only confirmed correct via a synthetic clock bypassing real wait
   time. Worth noticing whether 4 seconds actually feels like "enough notice to react"
   (e.g. rush to repair-fund a line) the next time a storm fires naturally during play.
+- `ECONOMY.spanThroughputMultiplier`/`spanThroughputCost` are first-pass — verified to
+  do exactly what the formulas say (statistically/exactly confirmed above), not
+  validated as a *good decision curve* by real play. Specifically unvalidated: whether
+  the payback period (roughly 60-90s at current numbers, back-of-envelope) feels like a
+  meaningful choice or an obvious auto-upgrade-everything button once CapEx is
+  comfortable — the kind of thing that only shows up from watching a real player's
+  actual choices, not from checking the math is internally consistent.
+- **This "keep going" pattern has now run twice without an intervening human
+  playtest.** Every round has been individually well-verified (exact formula matches,
+  real click paths, persistence round-trips), but "verified correct" and "verified fun"
+  are different claims, and only the first one has actually been checked at this point.
+  The growing "first-pass, unvalidated by play" list above is the honest state of
+  things — worth treating a real playthrough as overdue rather than optional before any
+  further "keep going."
 
 ## Maintenance note
 

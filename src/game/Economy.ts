@@ -15,8 +15,11 @@ export class Economy {
     this.crewHours -= crewHoursCost;
   }
 
-  tick(dt: number, energizedSpanCount: number): void {
-    this.capEx += energizedSpanCount * ECONOMY.capExIncomePerSpanPerSec * dt;
+  /** `capExIncomeRate` is CapEx/sec, already summed across every energized span's own
+   * rate (which varies by throughput tier — see `Span.incomeRate()`) — `Economy` stays
+   * a dumb accumulator and doesn't need to know spans or tiers exist. */
+  tick(dt: number, capExIncomeRate: number): void {
+    this.capEx += capExIncomeRate * dt;
     this.crewHours = Math.min(this.crewHoursMax, this.crewHours + ECONOMY.crewHoursRegenPerSec * dt);
   }
 
