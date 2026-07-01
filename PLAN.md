@@ -43,6 +43,8 @@ hand-written catenary function, not Rapier.
 | 5 | Deploy to hosting | **Done** — GitHub Pages, see below (superseded the original "Cloudflare Pages" placeholder) |
 | — | Player guide (in-game) + upgraded pole visuals (out-of-roadmap) | **Done** — see below |
 | — | More depth: span terrain cost, storm warning, line throughput (out-of-roadmap) | **Done** — see below |
+| — | Camera rotation hotkey (out-of-roadmap) | **Done** — see below |
+| — | Plant/Substation/Neighborhood redesign — real purpose/win condition (out-of-roadmap) | **In progress** — plan drafted, see "Up next" below |
 | 6 | Stretch: procedural regions, rival AI utility | Not started (audio and upgrade branching were pulled into the 10x expansion; procedural regions/rival AI remain open stretch goals) |
 
 ## Phase 1 scope (delivered)
@@ -408,18 +410,48 @@ deepening terrain and storms, not adding new systems.
 Both `GUIDE.md` and the docs here were updated alongside the code, per the standing
 "keep the guide/docs current" instructions.
 
+## Camera rotation hotkey (delivered)
+
+A quick, unrelated interruption: sometimes a pole occludes what's behind it. `Q`/`E`
+now rotate the camera 90° at a time (eased, same pattern as the existing zoom easing),
+always at the same isometric elevation — just from a different compass corner.
+`IsoCameraRig`'s `ISO_DIR` constant became a `BASE_ISO_DIR` + eased `rotationAngle`;
+`panRight`/`panForward` are recomputed on every rotation change so panning stays
+screen-relative regardless of orientation. Not persisted — every session starts back at
+the default orientation. Verified live: eases smoothly through all 4 orientations and a
+full 360° returns to the exact original camera position; a real raycasted click still
+correctly selects a tower after rotating; rotation is suppressed while the guide is
+open, matching every other hotkey.
+
 ## Up next
 
-The "10x expansion" is complete — all six waves (audio; lighting/materials/atmosphere;
-particles/weather; terrain depth; economy depth; upgrade branching) are delivered and
-verified, plus the player guide, upgraded pole visuals, and the three depth additions
-above (terrain-weighted span cost, storm warning telegraph, line throughput upgrade).
-Nothing is currently in progress. The only work still explicitly on the books is
-Phase 6's original stretch goals (procedural regions, a rival AI utility) — genuinely
-open-ended new-breadth features, not a scoped next step. Before picking either up, worth
-a real playtest of everything shipped so far — a real, growing list of tuning constants
-(marsh thresholds, cost curve, storm weighting, branch costs, span/warning/throughput
-numbers) are verified *correct* but not yet validated as *fun*, and audio has never been
-heard by a human. See HANDOVER.md's "Known gaps" section for the full unvalidated-by-play
+**A major redesign is now in progress**, prompted by the user asking for a real
+purpose/win-condition for the game — "realistic, industry-specific, and detailed,"
+citing "connecting a plant to a neighborhood" as the framing. Through two rounds of
+clarifying questions, the confirmed direction is: milestone objectives (discrete,
+completable goals, game continues after each); Power Plant and Neighborhood/Load-Center
+as new fixed-location anchor node types (not player-placed); a Substation as a new
+player-placed voltage-step-down node between them; full realism — N-1 redundancy
+(hard requirement, a real NERC-style standard), generation mix (multiple fuel types),
+demand growth over time; revenue tied to actually meeting neighborhood demand rather
+than the current flat/tiered per-span income; distinct distribution-pole visuals for the
+neighborhood-local leg vs. the existing lattice transmission towers; and the existing
+free-build sandbox stays exactly as it is, with objectives layered on top.
+
+A Plan agent has completed a detailed technical design (network-capacity/N-1 algorithm,
+entity architecture, revenue model, staged wave breakdown) — see
+`/Users/samgumble/.claude/plans/fancy-wandering-dawn-agent-a8e9fa7bd67d6e453.md`. It
+flagged one real tension needing explicit confirmation before implementation starts:
+decision "revenue tied to demand met" conflicts with the just-shipped flat/tiered span
+income system, and recommends an additive/layered model (new demand-based income
+coexists with the existing span income for non-objective spans) rather than a full
+replacement — this and the agent's other open questions need review before work begins.
+
+Once that redesign ships, the same "real playtest before adding more" recommendation
+from before still applies — a real, growing list of tuning constants (marsh thresholds,
+cost curve, storm weighting, branch costs, span/warning/throughput numbers) are verified
+*correct* but not yet validated as *fun*, and audio has never been heard by a human.
+Phase 6's original stretch goals (procedural regions, a rival AI utility) remain
+open-ended and not currently scoped. See HANDOVER.md's "Known gaps" section for the full
 list — it's getting long enough that a real playtest is the highest-leverage thing to do
 next, more than any single additional feature.

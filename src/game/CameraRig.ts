@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
-const ISO_DIR = new THREE.Vector3(1, 1, 1).normalize();
+const BASE_ISO_DIR = new THREE.Vector3(1, 1, 1).normalize();
+const UP = new THREE.Vector3(0, 1, 0);
 const CAMERA_DISTANCE = 120;
 const MIN_ZOOM = 10;
 const MAX_ZOOM = 90;
@@ -8,18 +9,24 @@ const PAN_BOUND = 80;
 /** Fraction of the remaining zoom gap closed per frame — higher is snappier. */
 const ZOOM_EASE = 0.18;
 const ZOOM_SNAP_EPSILON = 0.02;
+/** Same eased-target shape as zoom, applied to camera rotation. */
+const ROTATION_EASE = 0.18;
+const ROTATION_SNAP_EPSILON = 0.001;
 
 /**
- * Fixed-angle orthographic isometric camera with right-drag pan and
- * scroll-wheel zoom. Never rotates, matching the diorama/blueprint framing.
+ * Fixed-elevation orthographic isometric camera with right-drag pan,
+ * scroll-wheel zoom, and 90°-stepped rotation around the vertical axis —
+ * always isometric, just from any of 4 compass corners.
  */
 export class IsoCameraRig {
   readonly camera: THREE.OrthographicCamera;
   private readonly target = new THREE.Vector3(0, 0, 0);
-  private readonly panRight: THREE.Vector3;
-  private readonly panForward: THREE.Vector3;
+  private readonly panRight = new THREE.Vector3();
+  private readonly panForward = new THREE.Vector3();
   private zoom = 44;
   private targetZoom = 44;
+  private rotationAngle = 0;
+  private targetRotationAngle = 0;
   private isPanning = false;
   private lastX = 0;
   private lastY = 0;
@@ -37,12 +44,7 @@ export class IsoCameraRig {
       500,
     );
 
-    const forward = ISO_DIR.clone().negate();
-    forward.y = 0;
-    forward.normalize();
-    this.panForward = forward;
-    this.panRight = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
-
+    this.updatePanBasis();
     this.updateCameraPosition();
 
     el.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -52,9 +54,31 @@ export class IsoCameraRig {
     el.addEventListener('wheel', this.onWheel, { passive: false });
   }
 
+  private currentIsoDir(): THREE.Vector3 {
+    return BASE_ISO_DIR.clone().applyAxisAngle(UP, this.rotationAngle);
+  }
+
+  /** Pan directions are relative to the current screen orientation, so they need
+   * recomputing whenever rotation changes — otherwise "drag right" would stop meaning
+   * "view moves right" once the camera turns. */
+  private updatePanBasis(): void {
+    const forward = this.currentIsoDir().negate();
+    forward.y = 0;
+    forward.normalize();
+    this.panForward.copy(forward);
+    this.panRight.crossVectors(forward, UP).normalize();
+  }
+
   private updateCameraPosition(): void {
-    this.camera.position.copy(this.target).addScaledVector(ISO_DIR, CAMERA_DISTANCE);
+    this.camera.position.copy(this.target).addScaledVector(this.currentIsoDir(), CAMERA_DISTANCE);
     this.camera.lookAt(this.target);
+  }
+
+  /** `direction` is +1 or -1 — one 90° step per call, always the same rotational
+   * direction per call, so the eased transition never has to pick a "shortest path"
+   * across a wraparound. */
+  rotate(direction: 1 | -1): void {
+    this.targetRotationAngle += direction * (Math.PI / 2);
   }
 
   private onPointerDown = (e: PointerEvent): void => {
@@ -99,18 +123,33 @@ export class IsoCameraRig {
     this.camera.updateProjectionMatrix();
   }
 
-  /** Eases the current zoom toward the scroll target. Called once per frame. */
+  /** Eases zoom toward its scroll target and rotation toward its Q/E target. Called
+   * once per frame; each quantity only touches its dependent state when it actually
+   * moves, same as the zoom-only version before it. */
   update(): void {
-    const gap = this.targetZoom - this.zoom;
-    if (Math.abs(gap) < ZOOM_SNAP_EPSILON) {
+    const zoomGap = this.targetZoom - this.zoom;
+    if (Math.abs(zoomGap) < ZOOM_SNAP_EPSILON) {
       if (this.zoom !== this.targetZoom) {
         this.zoom = this.targetZoom;
         this.applyZoom();
       }
-      return;
+    } else {
+      this.zoom += zoomGap * ZOOM_EASE;
+      this.applyZoom();
     }
-    this.zoom += gap * ZOOM_EASE;
-    this.applyZoom();
+
+    const rotationGap = this.targetRotationAngle - this.rotationAngle;
+    if (Math.abs(rotationGap) < ROTATION_SNAP_EPSILON) {
+      if (this.rotationAngle !== this.targetRotationAngle) {
+        this.rotationAngle = this.targetRotationAngle;
+        this.updatePanBasis();
+        this.updateCameraPosition();
+      }
+    } else {
+      this.rotationAngle += rotationGap * ROTATION_EASE;
+      this.updatePanBasis();
+      this.updateCameraPosition();
+    }
   }
 
   onResize(): void {

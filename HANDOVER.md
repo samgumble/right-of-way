@@ -5,14 +5,14 @@ done; the "10x expansion" (six-wave plan, see below) is **fully delivered** — 
 waves (audio; lighting/materials/atmosphere; particles/weather; terrain depth; economy
 depth; upgrade branching) shipped and verified. Since then: an in-game player guide
 (`GUIDE.md`, opened via a `?` button), pole visuals that scale with real connection
-capacity, terrain-weighted span cost, a storm warning telegraph, and a line throughput
-upgrade have also shipped — see "Player guide + upgraded pole visuals" and "More depth
-on existing systems" below. Nothing is currently in progress — Phase 6's original
-stretch goals (procedural regions, rival AI) are the only remaining item, and they're
-genuinely open-ended new-breadth work, not a scoped next step. **Worth flagging
-directly: the list of shipped-but-unplaytested tuning constants is now long enough that
-a real human playthrough is the single highest-leverage next step, ahead of any more
-building.**
+capacity, terrain-weighted span cost, a storm warning telegraph, a line throughput
+upgrade, and a camera rotation hotkey (`Q`/`E`) have also shipped — see "Player guide +
+upgraded pole visuals" and "More depth on existing systems" below. **A major redesign is
+now in progress**: the user asked for a real purpose/win condition, "realistic,
+industry-specific, and detailed" — plants, substations, neighborhoods, N-1 redundancy,
+generation mix, demand growth, revenue tied to demand met. A Plan agent has drafted a
+detailed technical design (see "Up next" in `PLAN.md` for the plan-file path and the one
+open tension it flagged); implementation hasn't started yet.
 
 Read [PLAN.md](PLAN.md) first for roadmap/status. This doc is the "how it works and
 why" for whoever (human or Claude) picks this project up next.
@@ -123,9 +123,11 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   every other span-level deny already uses. `tick()`'s span loop now accumulates
   `capExIncomeRate` (summing each energized span's own `incomeRate()`) instead of a flat
   `energizedCount`, which is now itself dead and was removed rather than left unused.
-- **`CameraRig.ts`** — fixed-angle orthographic isometric camera. Never rotates.
-  Right-drag pans (pointerdown/move/up gated on `button === 2`) directly/1:1 — easing an
-  active drag would feel laggy, so pan is intentionally *not* eased. Scroll wheel sets a
+- **`CameraRig.ts`** — fixed-elevation orthographic isometric camera; rotates in 90°
+  steps around the vertical axis but never changes elevation angle (always a true
+  isometric view, just from one of 4 compass corners). Right-drag pans
+  (pointerdown/move/up gated on `button === 2`) directly/1:1 — easing an active drag
+  would feel laggy, so pan is intentionally *not* eased. Scroll wheel sets a
   `targetZoom` (clamped); a new `update()` method, called every tick, eases the actual
   `zoom` toward it (`ZOOM_EASE = 0.18` of the remaining gap per frame, snapping once
   within `ZOOM_SNAP_EPSILON`) and calls `applyZoom()` — previously `onWheel` snapped
@@ -133,7 +135,17 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   together so a reload doesn't visibly "ease in" from a default. Pan is clamped to
   `±PAN_BOUND` so you can't scroll off into the void. `getView()`/`setView(x, z, zoom)`
   read/write pan target and zoom directly, both going through the same clamps as normal
-  input so a corrupted saved camera can't put the view somewhere invalid.
+  input so a corrupted saved camera can't put the view somewhere invalid. **Rotation**
+  (new): `BASE_ISO_DIR` replaced the old fixed `ISO_DIR` constant; `rotationAngle`/
+  `targetRotationAngle` follow the exact same eased-target shape as zoom
+  (`ROTATION_EASE`/`ROTATION_SNAP_EPSILON`), and `rotate(±1)` bumps the target by
+  `±90°` — always one direction per call, so the eased transition never has to reason
+  about wraparound/shortest-path. `currentIsoDir()` rotates `BASE_ISO_DIR` around Y by
+  the live angle; `updateCameraPosition()` and `updatePanBasis()` both read from it, so
+  pan direction stays screen-relative at any rotation — this was the one real risk in an
+  otherwise mechanical change, and was verified explicitly (a real dispatched pan drag
+  after rotating, not just eyeballed). Not persisted — `setView` doesn't touch rotation,
+  so every session starts back at the default orientation.
 - **`Grid.ts`** — bounded ground plane (`GRID.cells × GRID.cells`, currently 20×20 at
   `GRID.cellSize = 6` world units) plus a `THREE.GridHelper` overlay. Owns the
   world↔grid-node mapping (`nearestNode`) and an occupancy set keyed by `"i,j"`.

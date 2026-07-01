@@ -70,11 +70,13 @@ Towers aren't the only thing that upgrades — individual lines do too, independ
 
 - **Right-click and drag** to pan.
 - **Scroll wheel** to zoom, eased rather than snapping instantly.
+- **`Q`** / **`E`** to rotate the view 90° at a time, eased rather than snapping — useful when a tower or line is blocking your view of what's behind it.
 
 ## Hotkeys
 
 - **`U`** — upgrade the selected tower (the Capacity branch, once at tier 2).
 - **`I`** — upgrade the selected tower via the Resilience branch (tier 2 only).
+- **`Q`** / **`E`** — rotate the camera 90° left/right.
 - **`Shift` + `R`** — **reset.** Wipes your save and starts a fresh game immediately. No confirmation, no undo.
 
 ## Reading the HUD

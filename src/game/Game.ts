@@ -291,6 +291,16 @@ export class Game {
     }
 
     const key = e.key.toLowerCase();
+
+    if (key === 'q') {
+      this.cameraRig.rotate(-1);
+      return;
+    }
+    if (key === 'e') {
+      this.cameraRig.rotate(1);
+      return;
+    }
+
     if (!this.selectedTower || (key !== 'u' && key !== 'i')) return;
     this.handleUpgradeKey(this.selectedTower, key === 'u' ? 'capacity' : 'resilience');
   };
