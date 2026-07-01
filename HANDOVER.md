@@ -1,8 +1,8 @@
 # Handover
 
-Last updated: 2026-07-01. Phase 4 is fully done; the "10x expansion" (six-wave plan, see
-below) is in progress — Waves 1–2 (audio; lighting/materials/atmosphere) delivered,
-Waves 3–6 planned but not built.
+Last updated: 2026-07-01. Phase 4 is fully done; Phase 5 (hosting, GitHub Pages) is done;
+the "10x expansion" (six-wave plan, see below) is in progress — Waves 1–2 (audio;
+lighting/materials/atmosphere) delivered, Waves 3–6 planned but not built.
 
 Read [PLAN.md](PLAN.md) first for roadmap/status. This doc is the "how it works and
 why" for whoever (human or Claude) picks this project up next.
@@ -560,6 +560,53 @@ state, and both have permanent fixes in the code, not just a one-off cleanup:
    all. If you touch the reset path again, keep both — the flag alone isn't sufficient
    if a new save trigger is added later and someone forgets the check exists.
 
+## Hosting
+
+You asked to "figure out the storage/hosting." Split into two questions: save-data
+storage was already solved (`localStorage`, no backend, no cross-device sync
+requirement — nothing to add). Hosting the built site was the real open item;
+`PLAN.md` had provisionally named Cloudflare Pages but that was never actually
+confirmed with you. Asked directly, and you picked **GitHub Pages** — lower friction
+since `gh` was already authenticated to your account and no Cloudflare account/config
+existed yet — on a **public** repo, since GitHub Pages on a private repo needs a paid
+GitHub plan and there's nothing sensitive in this project.
+
+- **`vite.config.ts`** (new): `base: process.env.GITHUB_ACTIONS ? '/right-of-way/' : '/'`.
+  GitHub Pages project sites (as opposed to a `<user>.github.io` root/user site) serve
+  from `https://<user>.github.io/<repo>/`, so every built asset URL needs that prefix —
+  without it, the deployed `index.html` would reference `/assets/...` at the domain
+  root and 404 everything. Gated on the `GITHUB_ACTIONS` env var (set automatically by
+  every GitHub Actions runner) rather than `NODE_ENV`/`import.meta.env.PROD`, so a local
+  `npm run build` still produces a root-relative build for local testing via `npm run
+  preview` — only the CI build gets the Pages prefix.
+- **`.github/workflows/deploy.yml`** (new): two-job workflow (`build` → `deploy`) using
+  the standard `actions/upload-pages-artifact` + `actions/deploy-pages` pair, triggered
+  on every push to `main` plus manual `workflow_dispatch`. `npm ci` (not `npm install`)
+  for reproducible CI installs from the committed `package-lock.json`.
+- **Repo**: created via `gh repo create right-of-way --public --source=. --remote=origin`,
+  wired as `origin`, existing local history pushed as-is (no history rewrite).
+- **Pages must be enabled once via API before the workflow's deploy step can succeed** —
+  `gh api -X POST repos/<owner>/<repo>/pages -f build_type=workflow`. Learned this the
+  concrete way: the very first push happened *before* this API call ran, and that
+  workflow run failed with `Failed to create deployment ... status: 404 ... Ensure
+  GitHub Pages has been enabled`. Re-running the workflow (`gh workflow run deploy.yml`)
+  after enabling Pages succeeded. If this repo's Pages settings are ever reset (e.g. a
+  fresh clone pushed to a new repo), that ordering — enable Pages *before* the first
+  successful deploy — needs to happen again.
+
+**Live site:** https://samgumble.github.io/right-of-way/
+**Repo:** https://github.com/samgumble/right-of-way
+
+**Verification:** confirmed via direct `curl` that the deployed `index.html` and both
+referenced asset URLs (JS bundle, CSS) return `200` at their real
+`/right-of-way/assets/...` paths, matching what a local `GITHUB_ACTIONS=true npm run
+build` produces. A live in-browser check (loading the actual deployed site and
+confirming it boots/renders, the same way every other phase was verified) was
+attempted but the Chrome browser tool was unresponsive/timed out in this environment —
+noted as a known gap below, not a confirmed problem. The deployed bundle is otherwise
+identical to what Wave 2 already verified running correctly locally; only the base URL
+path differs, and that's confirmed correct at the asset-serving level.
+
 ## "10x expansion"
 
 Not a numbered roadmap phase — the user asked to "10x the graphics and mechanics," a
@@ -861,6 +908,15 @@ trust wall-clock `sleep` alone to advance game time.
 - Day/night's `dayNightCycleSec = 480` (8 minutes) was chosen as a reasonable-feeling
   default, not validated against real play — nobody has actually watched a full cycle
   play out in real time yet, only inspected the math at synthetic time values.
+- The live GitHub Pages deploy (https://samgumble.github.io/right-of-way/) was verified
+  at the asset-serving level (`curl` confirms `index.html`/JS/CSS all `200` at the
+  correct paths) but not with a real in-browser load — the Chrome browser tool timed
+  out in this environment when attempting it. Worth a human sanity-check load, though
+  risk is low since it's the identical bundle already verified running locally.
+- No custom domain, no cache-control tuning, and no build-size optimization
+  (`vite build` already warns the JS bundle is >500kB post-minification, all of
+  three.js) — fine for a personal project on GitHub Pages' CDN, worth revisiting if
+  load time ever becomes a real complaint.
 
 ## Maintenance note
 

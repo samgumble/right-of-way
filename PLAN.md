@@ -40,7 +40,7 @@ hand-written catenary function, not Rapier.
 | 3 | Map & pacing: terrain, storms, permitting | **Done** — see [HANDOVER.md](HANDOVER.md) |
 | 4 | Visual/UI polish, HUD, onboarding | **Done** — see [HANDOVER.md](HANDOVER.md) |
 | — | "10x expansion" (out-of-roadmap, six-wave plan, in progress) | **In progress** — see below |
-| 5 | Deploy to Cloudflare Pages | Not started |
+| 5 | Deploy to hosting | **Done** — GitHub Pages, see below (superseded the original "Cloudflare Pages" placeholder) |
 | 6 | Stretch: procedural regions, rival AI utility | Not started (audio pulled forward into the 10x expansion) |
 
 ## Phase 1 scope (delivered)
@@ -218,6 +218,29 @@ fixing a real bug — see HANDOVER.md's Wave 2 section for the color-space expla
 Waves 3–6 (particles/weather, terrain depth, economy depth, upgrade branching) are
 planned but not yet built — see HANDOVER.md for the full per-wave breakdown before
 starting the next one.
+
+## Phase 5 scope (delivered)
+
+You asked to figure out storage/hosting. Save-data storage was already solved
+(`localStorage`, client-side, no action needed — the game has no backend and no
+cross-device sync requirement). Hosting was the open question: `PLAN.md` had
+provisionally named Cloudflare Pages, but that was never confirmed with you directly,
+and `gh` was already authenticated to your GitHub account with no Cloudflare CLI/config
+present — so you picked **GitHub Pages** instead, on a public repo (private-repo Pages
+needs a paid GitHub plan, and there's nothing sensitive in this repo).
+
+1. Created [github.com/samgumble/right-of-way](https://github.com/samgumble/right-of-way)
+   (public) and pushed the existing history to it.
+2. `vite.config.ts` sets `base: '/right-of-way/'` only under CI (`GITHUB_ACTIONS` env var)
+   — GitHub Pages project sites serve from `/<repo-name>/`, so built asset URLs need that
+   prefix, but the local dev server should keep running at root.
+3. `.github/workflows/deploy.yml` builds and deploys to Pages on every push to `main`
+   (and via manual `workflow_dispatch`).
+4. Enabled Pages via `gh api ... -f build_type=workflow` (required once, before the
+   workflow's deploy step can succeed — the first push actually raced ahead of this and
+   failed with a 404, which is how the ordering requirement was confirmed).
+
+**Live at:** https://samgumble.github.io/right-of-way/
 
 ## Up next
 
