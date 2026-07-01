@@ -5,7 +5,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
-import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, ECONOMY, GRID, PERMIT, SHADOW, STORM, TOWER_HEIGHT } from './constants';
+import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, ECONOMY, GRID, PERMIT, RAIN, SHADOW, STORM, TOWER_HEIGHT } from './constants';
 import { Grid, type GridNode } from './Grid';
 import { Tower, buildTowerVisual } from './Tower';
 import { Span } from './Span';
@@ -13,10 +13,12 @@ import { IsoCameraRig } from './CameraRig';
 import { Economy } from './Economy';
 import { Hud } from './Hud';
 import { SoundManager } from './SoundManager';
+import { ParticleBurst, type BurstStyle } from './ParticleBurst';
 import { denyShakeOffset } from './feedback';
 import { clearSave, loadGame, saveGame, type SaveData } from './Persistence';
 
 const AUTOSAVE_INTERVAL_MS = 3000;
+const UNIT_SCALE = new THREE.Vector3(1, 1, 1);
 
 interface SpanRecord {
   span: Span;
@@ -60,6 +62,12 @@ export class Game {
   private readonly sunLight: THREE.DirectionalLight;
   private readonly dayAmbientColor = new THREE.Color(COLORS.ambientLight);
   private readonly nightAmbientColor = new THREE.Color(COLORS.steelBlueDim);
+
+  private readonly bursts: ParticleBurst[] = [];
+  private readonly rainMesh: THREE.InstancedMesh;
+  private readonly rainPositions: THREE.Vector3[] = [];
+  private readonly rainQuat: THREE.Quaternion;
+  private rainActiveUntil: number | null = null;
 
   private readonly towers: Tower[] = [];
   private readonly spans: SpanRecord[] = [];
@@ -145,6 +153,11 @@ export class Game {
     this.ghost = buildTowerVisual(this.ghostMaterial, TOWER_HEIGHT);
     this.ghost.visible = false;
     this.scene.add(this.ghost);
+
+    const fallDir = new THREE.Vector3(RAIN.windDriftX, -RAIN.fallSpeed, RAIN.windDriftZ).normalize();
+    this.rainQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), fallDir);
+    this.rainMesh = this.buildRain();
+    this.scene.add(this.rainMesh);
 
     this.loadSavedGame();
 
@@ -233,6 +246,7 @@ export class Game {
         this.economy.spend(cost, 0);
         this.placeTower(node);
         this.sound.playPlace();
+        this.spawnBurst(node.world.clone().setY(0.3), 'dust', performance.now());
         this.save();
       } else {
         this.ghostDenyStart = performance.now();
@@ -370,6 +384,8 @@ export class Game {
       const target = candidates[Math.floor(Math.random() * candidates.length)];
       target.span.fault();
       this.sound.playStormStrike();
+      this.spawnBurst(target.span.midpoint(), 'spark', now);
+      this.startRain(now);
       this.save();
     }
     this.nextStormAt = now + randomStormDelayMs();
@@ -394,6 +410,78 @@ export class Game {
       dayFactor,
     );
     this.sunLight.intensity = THREE.MathUtils.lerp(ATMOSPHERE.nightKeyIntensity, ATMOSPHERE.dayKeyIntensity, dayFactor);
+  }
+
+  /** Thin instanced streaks, all sharing one precomputed fall+wind tilt (wind is a
+   * fixed constant, not per-storm, so every particle leans the same way). Reuses the
+   * deterministic-InstancedMesh pattern from Grid's terrain patches, but these actually
+   * animate frame to frame rather than being placed once. */
+  private buildRain(): THREE.InstancedMesh {
+    const geo = new THREE.CylinderGeometry(RAIN.streakRadius, RAIN.streakRadius, RAIN.streakLength, 4);
+    const mat = new THREE.MeshBasicMaterial({
+      color: COLORS.ambientLight,
+      transparent: true,
+      opacity: RAIN.opacity,
+    });
+    const mesh = new THREE.InstancedMesh(geo, mat, RAIN.count);
+    mesh.visible = false;
+    for (let i = 0; i < RAIN.count; i++) {
+      this.rainPositions.push(new THREE.Vector3());
+      this.initRainParticle(i);
+    }
+    return mesh;
+  }
+
+  private initRainParticle(i: number): void {
+    const x = (Math.random() * 2 - 1) * RAIN.spawnHalfExtent;
+    const z = (Math.random() * 2 - 1) * RAIN.spawnHalfExtent;
+    const y = Math.random() * RAIN.spawnHeight;
+    this.rainPositions[i].set(x, y, z);
+  }
+
+  /** Bounded weather event tied to an actual storm strike — not a persistent
+   * "isRaining" state, matching the audio ambience swell's same bounded-swell shape. */
+  private startRain(now: number): void {
+    this.rainActiveUntil = now + RAIN.durationMs;
+    this.rainMesh.visible = true;
+    for (let i = 0; i < RAIN.count; i++) this.initRainParticle(i);
+  }
+
+  private updateRain(now: number, dt: number): void {
+    if (this.rainActiveUntil === null) return;
+    if (now >= this.rainActiveUntil) {
+      this.rainActiveUntil = null;
+      this.rainMesh.visible = false;
+      return;
+    }
+
+    const m = new THREE.Matrix4();
+    for (let i = 0; i < RAIN.count; i++) {
+      const p = this.rainPositions[i];
+      p.y -= RAIN.fallSpeed * dt;
+      p.x += RAIN.windDriftX * dt;
+      p.z += RAIN.windDriftZ * dt;
+      if (p.y < 0) this.initRainParticle(i);
+      m.compose(p, this.rainQuat, UNIT_SCALE);
+      this.rainMesh.setMatrixAt(i, m);
+    }
+    this.rainMesh.instanceMatrix.needsUpdate = true;
+  }
+
+  private spawnBurst(origin: THREE.Vector3, style: BurstStyle, now: number): void {
+    const burst = new ParticleBurst(origin, style, now);
+    this.scene.add(burst.group);
+    this.bursts.push(burst);
+  }
+
+  private updateBursts(now: number): void {
+    for (let i = this.bursts.length - 1; i >= 0; i--) {
+      if (!this.bursts[i].update(now)) {
+        this.scene.remove(this.bursts[i].group);
+        this.bursts[i].dispose();
+        this.bursts.splice(i, 1);
+      }
+    }
   }
 
   private updateGhost(now: number): void {
@@ -520,7 +608,10 @@ export class Game {
 
     for (const tower of this.towers) {
       const event = tower.update(now);
-      if (event === 'permitCleared') this.sound.playPermitClear();
+      if (event === 'permitCleared') {
+        this.sound.playPermitClear();
+        this.spawnBurst(new THREE.Vector3(tower.topPos.x, 0.3, tower.topPos.z), 'dust', now);
+      }
     }
 
     let energizedCount = 0;
@@ -538,6 +629,8 @@ export class Game {
 
     if (now >= this.nextStormAt) this.triggerStorm(now);
 
+    this.updateRain(now, dt);
+    this.updateBursts(now);
     this.updateGhost(now);
     this.updateHud();
 

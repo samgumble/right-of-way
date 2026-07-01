@@ -90,3 +90,27 @@ export const SHADOW = {
   /** Blur kernel for VSMShadowMap — soft edges without the acne PCF needs bias-tuning for. */
   radius: 3,
 } as const;
+
+export const RAIN = {
+  count: 220,
+  /** How far past the board edge particles can spawn — a little overscan so the field
+   * doesn't visibly "start" at the boundary as the camera pans. */
+  spawnHalfExtent: 70,
+  spawnHeight: 32,
+  fallSpeed: 34,
+  /** Constant horizontal drift applied to every particle — one fixed wind direction,
+   * not randomized per storm, matching the "no gameplay coupling" constraint. */
+  windDriftX: -9,
+  windDriftZ: 4,
+  streakLength: 1.1,
+  streakRadius: 0.035,
+  opacity: 0.3,
+  /** Matches SoundManager's stormAmbienceSwell duration (5s) plus a short fade tail,
+   * so the visual and audio storm cues start and end together. */
+  durationMs: 5500,
+} as const;
+
+export const PARTICLE_BURST = {
+  dust: { color: COLORS.steelBlue, count: 10, durationMs: 500, speed: 2.2, size: 0.14 },
+  spark: { color: COLORS.faultRed, count: 14, durationMs: 420, speed: 4.5, size: 0.09 },
+} as const;

@@ -1,8 +1,9 @@
 # Handover
 
 Last updated: 2026-07-01. Phase 4 is fully done; Phase 5 (hosting, GitHub Pages) is done;
-the "10x expansion" (six-wave plan, see below) is in progress — Waves 1–2 (audio;
-lighting/materials/atmosphere) delivered, Waves 3–6 planned but not built.
+the "10x expansion" (six-wave plan, see below) is in progress — Waves 1–3 (audio;
+lighting/materials/atmosphere; particles/weather) delivered, Waves 4–6 planned but not
+built.
 
 Read [PLAN.md](PLAN.md) first for roadmap/status. This doc is the "how it works and
 why" for whoever (human or Claude) picks this project up next.
@@ -75,7 +76,14 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   `SHADOW.frustumHalfExtent` so it covers the full static board regardless of camera
   pan/zoom), and a `ShaderPass(VignetteShader)` appended *after* `OutputPass` — see Wave 2
   below for why the ordering matters. `updateAtmosphere(now)`, called every tick right
-  after `cameraRig.update()`, drives the day/night cycle.
+  after `cameraRig.update()`, drives the day/night cycle. And (Wave 3) a `rainMesh`
+  (`THREE.InstancedMesh`, 220 instances, built once in the constructor via `buildRain()`
+  and left `visible = false` until a storm strike calls `startRain(now)`), a `bursts:
+  ParticleBurst[]` array spawned via `spawnBurst(origin, style, now)` at the three trigger
+  sites (placement success in `onClick`, `permitCleared` in `tick()`'s tower loop, and a
+  storm's fault in `triggerStorm()`), and `updateRain(now, dt)` / `updateBursts(now)`
+  called every tick right after the storm check — the same "call it every frame, it's a
+  no-op unless something's active" idiom `updateFaultAlarm` already established.
 - **`CameraRig.ts`** — fixed-angle orthographic isometric camera. Never rotates.
   Right-drag pans (pointerdown/move/up gated on `button === 2`) directly/1:1 — easing an
   active drag would feel laggy, so pan is intentionally *not* eased. Scroll wheel sets a
@@ -176,10 +184,14 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   report two different events depending on how it was entered. This exists specifically
   because `repair()` deliberately reuses the `energizing` phase/animation rather than
   having its own — elegant for the visual, but it means the state machine alone can't
-  tell "just strung" from "just repaired" apart without this flag.
+  tell "just strung" from "just repaired" apart without this flag. And (Wave 3)
+  `midpoint(): THREE.Vector3` — returns the point at the middle index of the internal
+  catenary `points` array, cloned. Added specifically so `Game.triggerStorm()` has an
+  anchor for a fault-spark burst without `Span` exposing its full `points` array
+  (which stays private) to callers that only need one position.
 - **`constants.ts`** — all color/size/economy magic numbers live here: `COLORS`,
   `GRID`, `TOWER_HEIGHT`, `ECONOMY`, `DENY_SHAKE_DURATION_MS`, `TERRAIN`, `STORM`,
-  `PERMIT` (Phase 3).
+  `PERMIT` (Phase 3), `ATMOSPHERE`, `SHADOW` (Wave 2), `RAIN`, `PARTICLE_BURST` (Wave 3).
 - **`Economy.ts`** (Phase 2) — tiny state holder for `capEx` and `crewHours`.
   `canAfford(capExCost, crewHoursCost)`, `spend(...)`, and `tick(dt, energizedSpanCount)`
   which adds passive CapEx income (per energized span per second) and regenerates
@@ -218,6 +230,16 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   of `Math.random()`-generated white noise, built once) backs mechanical thunks,
   electrical crackle, and storm wind/rain via different filter shapes on the same
   source.
+- **`ParticleBurst.ts`** (Wave 3, new) — one class instance per burst *event* (not a
+  shared pool/emitter system): each owns its own small `THREE.InstancedMesh` (8-16
+  instances, styled by a `BurstStyle` key into `PARTICLE_BURST` — `'dust'` or
+  `'spark'`), a per-instance outward velocity computed once at construction (upward-
+  biased hemisphere spread, not a full sphere — reads more like a kicked-up pop than an
+  explosion), and an `update(now): boolean` that composes each instance's matrix from
+  `origin_velocity * t` with a small added gravity arc and a shrink-as-you-fade scale,
+  returning `false` once its duration elapses so `Game` knows to remove and `dispose()`
+  it. Same "own small file, class per instance, self-reports when done" shape as
+  `Span`/`Tower`'s `update()` pattern, scaled down for something this short-lived.
 
 ## Key decisions and why
 
@@ -765,6 +787,69 @@ returned a single frame. `renderer.info` also isn't a reliable total through
 frame-pacing feel, like Wave 1's audio, is on you to judge locally — noted below as a
 known gap rather than silently assumed fine.
 
+### Wave 3 — Particle & weather effects (delivered)
+
+Three effects, three techniques, per the plan — not one universal particle system.
+
+- **Rain** is a bounded ~5.5s weather event triggered by an actual storm strike inside
+  `triggerStorm()`'s existing `if (candidates.length >= STORM.minEnergizedSpansToStrike)`
+  branch — same branch that already plays `playStormStrike()`, so rain only appears when
+  a strike actually happens, never on a skipped/no-op storm check. Deliberately *not*
+  ambient/persistent rain — matches Wave 1's "bounded swell, not an `isStormActive`
+  state" precedent, and the duration (`RAIN.durationMs = 5500`) was picked to roughly
+  track `SoundManager`'s 5s ambience swell so the audio and visual storm cues start and
+  stop together without actually coupling the two systems (no shared timer — they're
+  just tuned to similar numbers).
+- **Wind is one fixed drift constant** (`RAIN.windDriftX/Z`), not randomized per storm —
+  every particle shares a single precomputed fall+wind tilt quaternion
+  (`Quaternion.setFromUnitVectors(up, fallDirection)`), computed once in the constructor,
+  not per-frame or per-particle. This is what makes the rain read as *wind-blown streaks*
+  rather than vertical rods falling straight down.
+- **Rain particles never get written into the `InstancedMesh`'s matrices until the first
+  `updateRain()` call after `startRain()`** — `startRain()` only flips `visible = true`
+  and resets each particle's tracked position; the actual `setMatrixAt` calls happen in
+  `updateRain()`, called from `tick()`. This was a real trap during verification: pausing
+  the animation loop right after calling `startRain()` (to freeze state for a screenshot,
+  the same technique used for Wave 2's day/night test) showed *nothing*, because no frame
+  had run yet to write real positions — the mesh was technically visible but every
+  instance was still sitting at its default identity-matrix transform. Fixed the test, not
+  the code — this lazy-write is fine in real gameplay since `tick()` always runs `updateRain`
+  the very next frame; it just means a "freeze and inspect" test needs to manually step
+  `updateRain` at least once after `startRain`.
+- **`ParticleBurst`** — ***own file***, one instance per burst event (see the
+  `ParticleBurst.ts` architecture bullet above). Two styles reusing the same class:
+  `'dust'` (steel-blue, slower, spawned at a tower's ground position — `(topPos.x, 0.3,
+  topPos.z)`, not `topPos` itself, since dust belongs at the base, not the top
+  attachment point) on both placement success and permit-clear; `'spark'` (hot red,
+  faster, more particles) at a faulted span's `midpoint()` inside `triggerStorm()`.
+  `Game` owns a flat `bursts: ParticleBurst[]` array and a `spawnBurst`/`updateBursts`
+  pair — `updateBursts(now)` walks the array backward, removes+disposes any burst whose
+  `update()` returned `false`, called every tick right alongside `updateRain`.
+- **No new timer or parallel state machine** — every trigger point is an existing call
+  site (`onClick`'s placement branch, `tick()`'s tower-event loop, `triggerStorm()`), and
+  both `updateRain`/`updateBursts` are unconditional-every-frame calls that internally
+  no-op when nothing's active, the same idiom `SoundManager.updateFaultAlarm` already
+  established in Wave 1.
+
+**Verification:** confirmed live, not just by reading the code back. Spawned dust and
+spark bursts directly, froze the animation loop, stepped their `update()` to mid-flight,
+and screenshotted both — visibly distinct colors, correct outward/upward spread, correct
+cleanup (removed from both `scene` and the `bursts` array once expired, confirmed via a
+follow-up state check rather than assumed). Built two energized spans directly, forced a
+storm strike with a **synthetic, fully controlled clock** (not `performance.now()`) so
+multi-step verification wasn't at the mercy of real wall-clock time elapsing between tool
+calls — stepped `updateRain` across ten synthetic 100ms frames and confirmed real,
+varied, in-bounds particle positions via `getMatrixAt`, then screenshotted the result
+(visible tilted streaks scattered across the board) and confirmed the mesh correctly went
+back to `visible = false` once stepped past `rainActiveUntil`. Re-ran the storm
+softlock-prevention regression check (a lone energized span must never be struck) with
+the new spark/rain code paths active in `triggerStorm()` — still holds, unchanged. Then,
+separately, dispatched a **real synthetic `pointermove`+`click` pair** through the actual
+DOM (not a direct method call) at a raycasted screen position for a buildable grid node,
+and confirmed it drove the entire real path — `onClick` → `placeTower` → `spawnBurst` —
+end to end, with a tower actually appearing and CapEx actually decrementing. `tsc
+--noEmit` clean throughout; no console errors at any point.
+
 ## Skills used this session
 
 - `design-game-design-fundamentals` — shaped the action→feedback→reward pacing
@@ -830,7 +915,8 @@ instant a tower is selected; camera zoom visibly eases toward the scroll target 
 of snapping; terrain patches read as organic/varied shapes, not stamped circles; the
 selected-tower emissive glow blooms visibly against the dark background. Confirmed
 working, Wave 1: see the "10x expansion — Wave 1" section above. Confirmed working,
-Wave 2: see the "10x expansion — Wave 2" section above. No automated tests exist yet.
+Wave 2: see the "10x expansion — Wave 2" section above. Confirmed working, Wave 3: see
+the "10x expansion — Wave 3" section above. No automated tests exist yet.
 
 A temporary debug hook (`window.__game`) was added each phase to get exact screen
 coordinates for synthetic clicks or to call internal methods directly, then removed
@@ -897,9 +983,17 @@ trust wall-clock `sleep` alone to advance game time.
   (no exceptions, correct event timing via console/state inspection), since this tool
   chain can't actually hear sound. Treat the synthesis design as unvalidated-by-ear
   until you've played with sound on.
-- Waves 3-6 of the "10x expansion" (particles/weather, terrain depth, economy depth,
-  upgrade-tree branching) are planned in full at
+- Waves 4-6 of the "10x expansion" (terrain depth, economy depth, upgrade-tree
+  branching) are planned in full at
   `/Users/samgumble/.claude/plans/fancy-wandering-dawn.md` but not yet built.
+- Rain's particle count (220), speed, and wind-drift constants are first-pass values,
+  tuned by eye against screenshots taken via the synthetic-clock technique described in
+  Wave 3's verification notes — not validated against a real, unpaused, real-time storm.
+  Worth watching the next time a storm fires naturally during real play.
+- Fault sparks and placement dust are visually distinct in isolated tests but haven't
+  been seen firing "in the wild" back-to-back with everything else happening on
+  screen (bloom, an active storm's rain, the fault alarm) — no reason to expect a
+  problem, just not yet observed together.
 - Frame-pacing cost of Wave 2's shadow mapping + extra post-processing pass hasn't been
   measured — this tool chain's `requestAnimationFrame` throttling makes any FPS/timing
   sample unreliable (see the Wave 2 Verification paragraph above). Watch for it locally,

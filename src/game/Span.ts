@@ -130,6 +130,12 @@ export class Span {
     return null;
   }
 
+  /** World-space midpoint along the catenary — for effects that need one anchor point
+   * without exposing the full points array (e.g. fault-spark placement). */
+  midpoint(): THREE.Vector3 {
+    return this.points[Math.floor(this.points.length / 2)].clone();
+  }
+
   isEnergized(): boolean {
     return this.phase === 'energized';
   }

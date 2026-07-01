@@ -219,6 +219,25 @@ Waves 3–6 (particles/weather, terrain depth, economy depth, upgrade branching)
 planned but not yet built — see HANDOVER.md for the full per-wave breakdown before
 starting the next one.
 
+**Wave 3 — Particle & weather effects: delivered.** Three effects, three techniques, per
+the plan. **Rain**: an `InstancedMesh` of 220 thin tilted streaks, a bounded ~5.5s weather
+event tied to an actual storm strike (not persistent, not ambient) — same "bounded swell,
+not a state machine" shape as Wave 1's audio ambience, and timed to roughly match its
+5s duration. Wind is one fixed drift constant (not randomized per storm), baked into a
+single precomputed tilt quaternion shared by every particle. **Placement dust / fault
+sparks**: a new `ParticleBurst.ts` (short one-shot outward-radiating bursts, own class per
+event, self-pruning once its duration elapses) — steel-blue dust at a tower's base on
+placement and on permit-clear, hot red sparks at a faulted span's midpoint (`Span` gained
+a `midpoint()` accessor for this, without exposing its internal points array). Everything
+hooks the existing storm timer and Wave 1's `update()`-return-value protocol — no new
+timer or parallel state machine. Verified live: a real click-driven placement (not just
+direct method calls) correctly fires a dust burst through the actual `onClick` path, and
+the storm softlock-prevention invariant (`STORM.minEnergizedSpansToStrike`) was
+regression-checked and still holds with the new spark/rain wiring in `triggerStorm()`.
+
+Waves 4–6 (terrain depth, economy depth, upgrade branching) are planned but not yet
+built — see HANDOVER.md for the full per-wave breakdown before starting the next one.
+
 ## Phase 5 scope (delivered)
 
 You asked to figure out storage/hosting. Save-data storage was already solved
@@ -244,8 +263,7 @@ needs a paid GitHub plan, and there's nothing sensitive in this repo).
 
 ## Up next
 
-Wave 3 (particle & weather effects — rain, wind drift, placement dust, fault sparks) is
-next per the approved 10x plan. Revisit HANDOVER.md's "10x expansion" section for the
-exact scope before starting — it specifies `InstancedMesh`-based rain (not
-`THREE.Points`), a new `ParticleBurst.ts` helper, and a new `Span.midpoint()` accessor
-needed for fault-spark positioning.
+Wave 4 (terrain & environment depth — one more terrain type via the existing
+`terrainAt`/`InstancedMesh`-patch pattern, plus setting up but not yet fully implementing
+terrain-influenced storm targeting) is next per the approved 10x plan. Revisit
+HANDOVER.md's "10x expansion" section for the exact scope before starting.
