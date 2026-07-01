@@ -238,6 +238,22 @@ regression-checked and still holds with the new spark/rain wiring in `triggerSto
 Waves 4–6 (terrain depth, economy depth, upgrade branching) are planned but not yet
 built — see HANDOVER.md for the full per-wave breakdown before starting the next one.
 
+**Wave 4 — Terrain & environment depth: delivered.** One new terrain type, **marsh** —
+via the exact same `terrainAt`/`InstancedMesh`-patch pattern already in `Grid.ts`, reused
+not reinvented. Sits at the noise band just above `TERRAIN.waterThreshold` (before it
+rises into `flat`), so it renders geographically adjacent to water bodies — buildable
+(unlike water) but costs 2.1× (steeper than a hill's 1.6×), representing soft/unstable
+ground. Visually a distinct dark teal-grey tint, still within the existing cool
+steel-blue palette discipline rather than a new hue family. On the current board this
+produces a healthy mix (258 flat / 71 water / 61 marsh / 51 hill nodes out of 441) —
+present but not dominant. This also sets up (does not yet implement — that's Wave 5)
+terrain influencing storm-target *selection*: no new plumbing was needed, since
+`Grid.terrainAt()` is already public and queryable per-span by its two tower endpoints;
+Wave 5 just needs to read it.
+
+Waves 5–6 (economy depth, upgrade branching) are planned but not yet built — see
+HANDOVER.md for the full per-wave breakdown before starting the next one.
+
 ## Phase 5 scope (delivered)
 
 You asked to figure out storage/hosting. Save-data storage was already solved
@@ -263,7 +279,9 @@ needs a paid GitHub plan, and there's nothing sensitive in this repo).
 
 ## Up next
 
-Wave 4 (terrain & environment depth — one more terrain type via the existing
-`terrainAt`/`InstancedMesh`-patch pattern, plus setting up but not yet fully implementing
-terrain-influenced storm targeting) is next per the approved 10x plan. Revisit
-HANDOVER.md's "10x expansion" section for the exact scope before starting.
+Wave 5 (economy depth — a repeat-construction cost curve, terrain-weighted storm
+targeting using Wave 4's new `marsh` classification, and storm severity scaling) is next
+per the approved 10x plan. Revisit HANDOVER.md's "10x expansion" section for the exact
+scope before starting — Wave 5's storm severity scaling must **not** reopen the softlock
+invariant (interval-only scaling, never multi-strike-per-storm, per the plan's explicit
+constraint).

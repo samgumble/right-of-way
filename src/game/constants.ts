@@ -11,6 +11,7 @@ export const COLORS = {
   /** Terrain tints stay in the cool steel-blue family — shading on a blueprint, not a literal green/blue map. */
   hillTint: 0x4a7691,
   waterTint: 0x0a141d,
+  marshTint: 0x1f3d3a,
 } as const;
 
 export const GRID = {
@@ -43,8 +44,16 @@ export const DENY_SHAKE_DURATION_MS = 260;
 
 export const TERRAIN = {
   hillCostMultiplier: 1.6,
-  /** Below this noise value a node is water (unbuildable); above the upper one, a hill. */
+  /** Marsh sits between water and flat — soft, unstable ground, buildable but pricier
+   * than a hill. Also the terrain Wave 5's storm-target weighting will read from
+   * (wet/unstable ground skewing more storm-prone) — not implemented yet, this just
+   * creates the classification for it to use later. */
+  marshCostMultiplier: 2.1,
+  /** Below this noise value a node is water (unbuildable). */
   waterThreshold: -0.9,
+  /** Between waterThreshold and this value, a node is marsh. */
+  marshThreshold: -0.55,
+  /** Above this value, a node is a hill. */
   hillThreshold: 0.9,
 } as const;
 

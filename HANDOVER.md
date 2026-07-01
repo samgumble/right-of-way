@@ -1,9 +1,9 @@
 # Handover
 
 Last updated: 2026-07-01. Phase 4 is fully done; Phase 5 (hosting, GitHub Pages) is done;
-the "10x expansion" (six-wave plan, see below) is in progress — Waves 1–3 (audio;
-lighting/materials/atmosphere; particles/weather) delivered, Waves 4–6 planned but not
-built.
+the "10x expansion" (six-wave plan, see below) is in progress — Waves 1–4 (audio;
+lighting/materials/atmosphere; particles/weather; terrain depth) delivered, Waves 5–6
+planned but not built.
 
 Read [PLAN.md](PLAN.md) first for roadmap/status. This doc is the "how it works and
 why" for whoever (human or Claude) picks this project up next.
@@ -100,12 +100,13 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   world↔grid-node mapping (`nearestNode`) and an occupancy set keyed by `"i,j"`.
   `nearestNode` rejects non-finite `i`/`j` before the bounds check — see "Persistence"
   below for why that check exists. Also owns (Phase 3) terrain: `terrainAt(i,j)`
-  classifies every node `flat`/`hill`/`water` via `terrainNoise` (a fixed, unseeded
-  layered-sine field — see "Phase 3 decisions"); `isBuildable(i,j)` and
+  classifies every node `flat`/`hill`/`water` (Wave 4: `/marsh`) via `terrainNoise` (a
+  fixed, unseeded layered-sine field — see "Phase 3 decisions"); `isBuildable(i,j)` and
   `towerCostMultiplier(i,j)` are what `Game` calls when placing. Hill/water patches are
-  rendered once in the constructor as two `THREE.InstancedMesh`es (one per terrain
-  type, sized to however many nodes actually are that type) rather than one mesh per
-  node, keeping draw calls flat regardless of grid size. Each instance's matrix (Phase 4)
+  rendered once in the constructor as `THREE.InstancedMesh`es (one per terrain
+  type, sized to however many nodes actually are that type — three meshes as of Wave 4)
+  rather than one mesh per node, keeping draw calls flat regardless of grid size. Each
+  instance's matrix (Phase 4)
   now also carries a small deterministic rotation/scale/position jitter, hashed from
   `(i, j)` — same "no seed, regenerates identically" discipline as `terrainNoise` — so
   patches read as organic shapes instead of a grid of identical stamped circles. Ground
@@ -850,6 +851,50 @@ and confirmed it drove the entire real path — `onClick` → `placeTower` → `
 end to end, with a tower actually appearing and CapEx actually decrementing. `tsc
 --noEmit` clean throughout; no console errors at any point.
 
+### Wave 4 — Terrain & environment depth (delivered)
+
+One new terrain type, **marsh**, via the exact same pattern hill/water already
+established in `Grid.ts` — reused, not reinvented. No unique per-type geometry or
+animation gimmick (e.g. animated reeds/trees), per the plan's explicit constraint that
+this stay "richer geometry," not its own subsystem.
+
+- **Classification**: `TERRAIN.marshThreshold = -0.55` sits between
+  `TERRAIN.waterThreshold` (`-0.9`) and the existing flat range, so `terrainAt()` reads
+  `water → marsh → flat → hill` as the noise value rises — marsh occupies the band
+  immediately above water, which is *why* it renders geographically adjacent to water
+  bodies (same noise field, no separate placement logic). Buildable (`isBuildable` only
+  excludes `water`), but `TERRAIN.marshCostMultiplier = 2.1` — steeper than a hill's
+  `1.6`, representing soft/unstable ground needing more reinforcement, not just "another
+  hill with a different color."
+- **Visual**: `COLORS.marshTint = 0x1f3d3a`, a dark teal-grey — deliberately picked to
+  read as *distinct* from both `hillTint` (lighter, warmer blue-grey) and `waterTint`
+  (near-black navy) while staying in the same "cool steel-blue family, shading on a
+  blueprint" discipline the `COLORS` comment already established — no new hue family
+  introduced, same rule Wave 2's day/night cycle followed for lighting.
+- **Sets up, does not implement, terrain-weighted storm targeting** (that's explicitly
+  Wave 5's job per the plan). No new plumbing was added for this — `Grid.terrainAt(i,j)`
+  was already public, and a span's two tower endpoints already expose their `gridI`/
+  `gridJ`, so Wave 5 can query per-span terrain directly without `Grid` or `Span`
+  changing further. This wave's only job was making sure a *storm-relevant* terrain
+  classification (wet/unstable ground) existed for Wave 5 to read.
+- **Distribution**, confirmed by querying `terrainAt` across the full 21×21 node grid
+  (441 nodes): 258 flat, 71 water, 61 marsh, 51 hill. Marsh is present but not
+  dominant — roughly half of water's footprint, which reads correctly as "band at the
+  water's edge" rather than "its own major biome."
+
+**Verification:** confirmed the distribution numbers above directly; confirmed a sampled
+marsh node is buildable and returns cost multiplier `2.1` via direct `Grid` queries;
+confirmed visually via screenshot that marsh renders as a distinct tonal band adjacent to
+a water body, without clashing against the hill/water tints; then confirmed **through a
+real click** (not a direct method call) that placing a tower on a marsh node actually
+spends `80 × 2.1 = 168` CapEx — first attempt correctly triggered nothing (insufficient
+funds, `economy.canAfford(168, 0)` was `false` at the time), which was itself a useful
+confirmation that the deny path holds at the new cost tier, then topped up CapEx directly
+and re-ran the same click to confirm the exact spend and a real tower placement. Test
+tower and CapEx override were both cleaned up afterward, leaving the legitimate
+single-tower save state from Wave 3's verification intact. `tsc --noEmit` clean; no
+console errors.
+
 ## Skills used this session
 
 - `design-game-design-fundamentals` — shaped the action→feedback→reward pacing
@@ -916,7 +961,8 @@ of snapping; terrain patches read as organic/varied shapes, not stamped circles;
 selected-tower emissive glow blooms visibly against the dark background. Confirmed
 working, Wave 1: see the "10x expansion — Wave 1" section above. Confirmed working,
 Wave 2: see the "10x expansion — Wave 2" section above. Confirmed working, Wave 3: see
-the "10x expansion — Wave 3" section above. No automated tests exist yet.
+the "10x expansion — Wave 3" section above. Confirmed working, Wave 4: see the "10x
+expansion — Wave 4" section above. No automated tests exist yet.
 
 A temporary debug hook (`window.__game`) was added each phase to get exact screen
 coordinates for synthetic clicks or to call internal methods directly, then removed
@@ -966,9 +1012,12 @@ trust wall-clock `sleep` alone to advance game time.
 - Storms have no warning telegraph — they strike instantly and unpredictably by design
   (uncertainty is the point), but a brief "storm incoming" cue could be added later for
   fairness/anticipation without changing the core mechanic.
-- Terrain is purely a cost/buildability modifier — no other gameplay effect (e.g., span
-  cost isn't affected by terrain crossed, only by raw distance). Could be extended if
-  the economy needs more depth from terrain specifically.
+- Terrain is still purely a cost/buildability modifier as of Wave 4 (marsh added a
+  *fourth* one-time-cost terrain type, but didn't change the underlying "cost at
+  placement, nothing else" shape) — span cost still isn't affected by terrain crossed,
+  only raw distance. Wave 5 is specifically scoped to change this (terrain-weighted
+  storm targeting reading `Grid.terrainAt()`), so this gap should close there rather
+  than needing separate follow-up work.
 - Permits can't be canceled/refunded once placed, and permitting is universal (no
   zone-specific variation) — both deliberate scope cuts for the first pass, see
   "Permitting" above for the reasoning.
@@ -983,9 +1032,14 @@ trust wall-clock `sleep` alone to advance game time.
   (no exceptions, correct event timing via console/state inspection), since this tool
   chain can't actually hear sound. Treat the synthesis design as unvalidated-by-ear
   until you've played with sound on.
-- Waves 4-6 of the "10x expansion" (terrain depth, economy depth, upgrade-tree
-  branching) are planned in full at
+- Waves 5-6 of the "10x expansion" (economy depth, upgrade-tree branching) are planned
+  in full at
   `/Users/samgumble/.claude/plans/fancy-wandering-dawn.md` but not yet built.
+- Marsh's threshold/cost-multiplier values (`TERRAIN.marshThreshold = -0.55`,
+  `marshCostMultiplier = 2.1`) are first-pass, chosen to produce a reasonable-looking
+  distribution (61/441 nodes) and a cost that reads as "pricier than a hill" — not
+  validated against real economy pacing the way `ECONOMY`'s own numbers were flagged as
+  unvalidated back in Phase 2/3.
 - Rain's particle count (220), speed, and wind-drift constants are first-pass values,
   tuned by eye against screenshots taken via the synthetic-clock technique described in
   Wave 3's verification notes — not validated against a real, unpaused, real-time storm.

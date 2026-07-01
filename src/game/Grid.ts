@@ -7,7 +7,7 @@ export interface GridNode {
   world: THREE.Vector3;
 }
 
-export type Terrain = 'flat' | 'hill' | 'water';
+export type Terrain = 'flat' | 'hill' | 'water' | 'marsh';
 
 /**
  * Deterministic, fixed layered-sine value field — no external noise library, and no
@@ -81,11 +81,13 @@ export class Grid {
   private buildTerrainPatches(): void {
     const hillNodes: GridNode[] = [];
     const waterNodes: GridNode[] = [];
+    const marshNodes: GridNode[] = [];
     for (let i = 0; i <= GRID.cells; i++) {
       for (let j = 0; j <= GRID.cells; j++) {
         const terrain = this.terrainAt(i, j);
         if (terrain === 'hill') hillNodes.push({ i, j, world: this.nodeToWorld(i, j) });
         else if (terrain === 'water') waterNodes.push({ i, j, world: this.nodeToWorld(i, j) });
+        else if (terrain === 'marsh') marshNodes.push({ i, j, world: this.nodeToWorld(i, j) });
       }
     }
 
@@ -118,11 +120,26 @@ export class Grid {
       waterMesh.receiveShadow = true;
       this.group.add(waterMesh);
     }
+
+    if (marshNodes.length) {
+      const marshMat = new THREE.MeshStandardMaterial({
+        color: COLORS.marshTint,
+        transparent: true,
+        opacity: 0.4,
+        roughness: 0.7,
+        metalness: 0.05,
+      });
+      const marshMesh = new THREE.InstancedMesh(patchGeo, marshMat, marshNodes.length);
+      marshNodes.forEach((n, idx) => marshMesh.setMatrixAt(idx, buildPatchMatrix(n, 0.012)));
+      marshMesh.receiveShadow = true;
+      this.group.add(marshMesh);
+    }
   }
 
   terrainAt(i: number, j: number): Terrain {
     const n = terrainNoise(i, j);
     if (n < TERRAIN.waterThreshold) return 'water';
+    if (n < TERRAIN.marshThreshold) return 'marsh';
     if (n > TERRAIN.hillThreshold) return 'hill';
     return 'flat';
   }
@@ -132,7 +149,10 @@ export class Grid {
   }
 
   towerCostMultiplier(i: number, j: number): number {
-    return this.terrainAt(i, j) === 'hill' ? TERRAIN.hillCostMultiplier : 1;
+    const terrain = this.terrainAt(i, j);
+    if (terrain === 'hill') return TERRAIN.hillCostMultiplier;
+    if (terrain === 'marsh') return TERRAIN.marshCostMultiplier;
+    return 1;
   }
 
   nodeToWorld(i: number, j: number): THREE.Vector3 {
