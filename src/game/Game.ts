@@ -12,6 +12,7 @@ import { Span } from './Span';
 import { IsoCameraRig } from './CameraRig';
 import { Economy } from './Economy';
 import { Hud } from './Hud';
+import { Guide } from './Guide';
 import { SoundManager } from './SoundManager';
 import { ParticleBurst, type BurstStyle } from './ParticleBurst';
 import { denyShakeOffset } from './feedback';
@@ -62,6 +63,7 @@ export class Game {
   private readonly grid = new Grid();
   private readonly economy = new Economy();
   private readonly hud: Hud;
+  private readonly guide: Guide;
   private readonly sound = new SoundManager();
   private readonly ambientLight: THREE.AmbientLight;
   private readonly sunLight: THREE.DirectionalLight;
@@ -104,6 +106,7 @@ export class Game {
 
     this.cameraRig = new IsoCameraRig(this.renderer.domElement);
     this.hud = new Hud(container);
+    this.guide = new Guide(container);
 
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.cameraRig.camera));
@@ -271,6 +274,8 @@ export class Game {
   };
 
   private onKeyDown = (e: KeyboardEvent): void => {
+    if (this.guide.isOpen()) return;
+
     if (e.shiftKey && e.key.toLowerCase() === 'r') {
       this.isResetting = true;
       this.renderer.setAnimationLoop(null);

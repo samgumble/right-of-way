@@ -41,6 +41,7 @@ hand-written catenary function, not Rapier.
 | 4 | Visual/UI polish, HUD, onboarding | **Done** — see [HANDOVER.md](HANDOVER.md) |
 | — | "10x expansion" (out-of-roadmap, six-wave plan) | **Done** — all 6 waves, see below |
 | 5 | Deploy to hosting | **Done** — GitHub Pages, see below (superseded the original "Cloudflare Pages" placeholder) |
+| — | Player guide (in-game) + upgraded pole visuals (out-of-roadmap) | **Done** — see below |
 | 6 | Stretch: procedural regions, rival AI utility | Not started (audio and upgrade branching were pulled into the 10x expansion; procedural regions/rival AI remain open stretch goals) |
 
 ## Phase 1 scope (delivered)
@@ -334,14 +335,43 @@ needs a paid GitHub plan, and there's nothing sensitive in this repo).
 
 **Live at:** https://samgumble.github.io/right-of-way/
 
+## Player guide + upgraded pole visuals (delivered)
+
+Two requests after the 10x expansion closed out: a real user guide reachable in-game,
+and pole models that visually show more lines as they upgrade.
+
+1. **`GUIDE.md`** (repo root, same placement convention as `PLAN.md`/`HANDOVER.md`) is
+   the single source of truth for the player-facing guide — core loop, economy, terrain,
+   storms/repairs, permitting, upgrade branches, camera controls, hotkeys, HUD reference.
+   A new `?` button (top-right, matching the HUD's visual language) opens a scrollable
+   overlay panel rendering it. No separate in-game copy: `Guide.ts` imports `GUIDE.md`
+   directly at build time via Vite's `?raw` import, run through a new tiny hand-rolled
+   markdown renderer (`markdown.ts` — headers, bullet lists, bold, inline code,
+   paragraphs; no dependency added, extending the project's existing "hand-write it"
+   precedent). **This needs to stay in sync going forward** — any mechanics change
+   should update `GUIDE.md` alongside the code and alongside `PLAN.md`/`HANDOVER.md`.
+   Gameplay hotkeys are fully suppressed while the guide is open (verified with a real
+   selected, upgradeable tower — `U` did nothing while the panel was up), so reading the
+   guide can never accidentally trigger an upgrade or the reset hotkey.
+2. **Upgraded pole visuals**: every tier-upgrade arm now hangs the same insulator-nub
+   detail the top arm already had (Phase 4), with the insulator *count* on each arm set
+   to exactly the capacity gained at that step — so a tower's total visible insulator
+   count always equals its real connection capacity (2 / 4 / 8 for Capacity branch / 6
+   for Resilience branch), verified exactly via direct capacity-fill tests at all four
+   tier/branch combinations. Also fixed a latent gap from Wave 6: tier-upgrade arm
+   meshes added after construction never got `castShadow` set (the constructor's
+   shadow traversal only runs once, before any upgrades happen) — now set explicitly
+   per mesh as each arm is built.
+
 ## Up next
 
 The "10x expansion" is complete — all six waves (audio; lighting/materials/atmosphere;
 particles/weather; terrain depth; economy depth; upgrade branching) are delivered and
-verified. Nothing is currently in progress. The only work still explicitly on the
-books is Phase 6's original stretch goals (procedural regions, a rival AI utility) —
-genuinely open-ended new-breadth features, not a scoped next step. Before picking either
-up, worth a real playtest of everything shipped so far — several tuning constants across
-Waves 4-6 (marsh thresholds, cost curve, storm weighting, branch costs) are verified
-*correct* but not yet validated as *fun*, and audio has never been heard by a human. See
-HANDOVER.md's "Known gaps" section for the full unvalidated-by-play list.
+verified, plus the player guide and upgraded pole visuals above. Nothing is currently in
+progress. The only work still explicitly on the books is Phase 6's original stretch
+goals (procedural regions, a rival AI utility) — genuinely open-ended new-breadth
+features, not a scoped next step. Before picking either up, worth a real playtest of
+everything shipped so far — several tuning constants across Waves 4-6 (marsh thresholds,
+cost curve, storm weighting, branch costs) are verified *correct* but not yet validated
+as *fun*, and audio has never been heard by a human. See HANDOVER.md's "Known gaps"
+section for the full unvalidated-by-play list.

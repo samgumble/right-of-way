@@ -11,6 +11,10 @@ function easeOutBack(x: number): number {
   return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
 }
 
+/** Shared insulator-string geometry — one instance reused by every arm on every tower
+ * (including tier-upgrade arms added later), not recreated per tower. */
+const insulatorGeo = new THREE.CylinderGeometry(0.04, 0.06, 0.34, 5);
+
 /** Shared low-poly lattice-tower geometry, reused by real towers and the hover ghost. */
 export function buildTowerVisual(material: THREE.Material, height: number): THREE.Group {
   const group = new THREE.Group();
@@ -24,7 +28,6 @@ export function buildTowerVisual(material: THREE.Material, height: number): THRE
   group.add(armUpper);
 
   // Insulator strings at the arm tips, where the conductor actually attaches.
-  const insulatorGeo = new THREE.CylinderGeometry(0.04, 0.06, 0.34, 5);
   for (const side of [-1, 1]) {
     const insulator = new THREE.Mesh(insulatorGeo, material);
     insulator.position.set(side * 1.04, height * 0.86 - 0.2, 0);
@@ -42,20 +45,34 @@ export function buildTowerVisual(material: THREE.Material, height: number): THRE
   return group;
 }
 
+interface ArmSpec {
+  heightFrac: number;
+  width: number;
+  /** Insulator nubs hung under this arm — set to the *capacity gained at this tier
+   * step*, so a tower's total visible insulator count always equals its real
+   * connection capacity. This is what makes "more lines" an honest readout, not
+   * decoration: 2 (tier 1, in buildTowerVisual) + this arm's count + any further
+   * arms' counts always sums to `ECONOMY.towerTierCapacity`/the Capacity-branch total. */
+  insulatorCount: number;
+}
+
 /** Extra cross-arms added lower on the shaft as a tower upgrades, signalling more capacity
  * without moving the top attachment point (which would detach already-strung spans).
- * Only the universal tier 1→2 arm lives here — tier 2→3 branches into two shapes below. */
-const TIER_ARMS: { heightFrac: number; width: number }[] = [{ heightFrac: 0.5, width: 1.8 }];
+ * Only the universal tier 1→2 arm lives here — tier 2→3 branches into two shapes below.
+ * Capacity 2→4: +2 insulators. */
+const TIER_ARMS: ArmSpec[] = [{ heightFrac: 0.5, width: 1.8, insulatorCount: 2 }];
 
 /** Tier 2→3 arm shape differs by branch — same `BoxGeometry` primitive, geometry-only
  * differentiation (no new colors), same discipline as terrain tints. Capacity reads as
- * one wide arm (more lines terminate here); Resilience reads as two stacked arms
- * (visual bracing/reinforcement). */
-const TIER3_BRANCH_ARMS: Record<TowerBranch, { heightFrac: number; width: number }[]> = {
-  capacity: [{ heightFrac: 0.32, width: 2.0 }],
+ * one wide arm carrying all 4 newly-gained lines (4→8 capacity); Resilience reads as two
+ * stacked arms — only the first carries insulators (4→6 capacity, +2), the second is
+ * pure bracing/reinforcement with none, visually distinguishing "more lines" from
+ * "sturdier existing lines." */
+const TIER3_BRANCH_ARMS: Record<TowerBranch, ArmSpec[]> = {
+  capacity: [{ heightFrac: 0.32, width: 2.0, insulatorCount: 4 }],
   resilience: [
-    { heightFrac: 0.32, width: 1.4 },
-    { heightFrac: 0.24, width: 1.4 },
+    { heightFrac: 0.32, width: 1.4, insulatorCount: 2 },
+    { heightFrac: 0.24, width: 1.4, insulatorCount: 0 },
   ],
 };
 
@@ -154,19 +171,31 @@ export class Tower {
    * arm (`branch` required in that case). */
   private addArmForTier(tier: number, branch?: TowerBranch): void {
     if (tier === 1) {
-      const arm = TIER_ARMS[0];
-      this.addArmMesh(arm.heightFrac, arm.width);
+      this.addArm(TIER_ARMS[0]);
       return;
     }
     if (tier === 2 && branch) {
-      for (const arm of TIER3_BRANCH_ARMS[branch]) this.addArmMesh(arm.heightFrac, arm.width);
+      for (const arm of TIER3_BRANCH_ARMS[branch]) this.addArm(arm);
     }
   }
 
-  private addArmMesh(heightFrac: number, width: number): void {
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, 0.16, 0.16), this.material);
-    mesh.position.y = this.height * heightFrac;
+  /** Adds one cross-arm mesh plus its insulator nubs (if any). New meshes get
+   * `castShadow` set explicitly here — the constructor's one-time shadow traversal
+   * only covers geometry that exists at construction time, before any tier upgrades. */
+  private addArm(arm: ArmSpec): void {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(arm.width, 0.16, 0.16), this.material);
+    mesh.position.y = this.height * arm.heightFrac;
+    mesh.castShadow = true;
     this.group.add(mesh);
+
+    const usableWidth = arm.width * 0.85;
+    for (let i = 0; i < arm.insulatorCount; i++) {
+      const t = arm.insulatorCount === 1 ? 0.5 : i / (arm.insulatorCount - 1);
+      const insulator = new THREE.Mesh(insulatorGeo, this.material);
+      insulator.position.set((t - 0.5) * usableWidth, this.height * arm.heightFrac - 0.2, 0);
+      insulator.castShadow = true;
+      this.group.add(insulator);
+    }
   }
 
   /** Tier 1→2 is universal (`branch` is ignored). Tier 2→3 requires a branch —

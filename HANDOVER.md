@@ -3,9 +3,12 @@
 Last updated: 2026-07-01. Phase 4 is fully done; Phase 5 (hosting, GitHub Pages) is
 done; the "10x expansion" (six-wave plan, see below) is **fully delivered** — all six
 waves (audio; lighting/materials/atmosphere; particles/weather; terrain depth; economy
-depth; upgrade branching) shipped and verified. Nothing is currently in progress —
-Phase 6's original stretch goals (procedural regions, rival AI) are the only remaining
-item, and they're genuinely open-ended new-breadth work, not a scoped next step.
+depth; upgrade branching) shipped and verified. Since then: an in-game player guide
+(`GUIDE.md`, opened via a `?` button) and pole visuals that scale with real connection
+capacity have also shipped — see "Player guide + upgraded pole visuals" below. Nothing
+is currently in progress — Phase 6's original stretch goals (procedural regions, rival
+AI) are the only remaining item, and they're genuinely open-ended new-breadth work, not
+a scoped next step.
 
 Read [PLAN.md](PLAN.md) first for roadmap/status. This doc is the "how it works and
 why" for whoever (human or Claude) picks this project up next.
@@ -98,7 +101,10 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   factors out the shared afford-check/spend/upgrade/sound/save sequence both paths need.
   `spanStormWeight` gained the Resilience check (multiplicative on top of the marsh
   check, not a replacement). `save()`/`loadSavedGame()` both thread the new optional
-  `branch` through to/from `Tower`.
+  `branch` through to/from `Tower`. Also owns a `guide: Guide` field, constructed right
+  alongside `hud`; `onKeyDown`'s very first line is now `if (this.guide.isOpen())
+  return;`, gating every gameplay hotkey (including `Shift+R`) while the guide panel is
+  open.
 - **`CameraRig.ts`** — fixed-angle orthographic isometric camera. Never rotates.
   Right-drag pans (pointerdown/move/up gated on `button === 2`) directly/1:1 — easing an
   active drag would feel laggy, so pan is intentionally *not* eased. Scroll wheel sets a
@@ -178,7 +184,16 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   optional branch parameter (ignored below tier 2); `materializeFromSave` gained a
   fourth optional `branch` parameter, applied only when `tier >= 3`, and defaults to
   `null` gracefully (no crash) if a tier-3 tower's save data has no branch — the exact
-  shape a pre-Wave-6 save would have.
+  shape a pre-Wave-6 save would have. Renamed `addArmMesh`→`addArm` and gave it an
+  `ArmSpec` (post-Wave-6): every arm spec now carries an `insulatorCount`, and `addArm`
+  hangs that many insulator nubs (the same shared `insulatorGeo`, now a module-level
+  constant instead of being recreated per tower) evenly spaced under the arm — set to
+  exactly the capacity *gained* at that tier step, so a tower's total visible insulator
+  count always equals `hasFreeCapacity()`'s real ceiling (2/4/8 Capacity, 4/6 Resilience).
+  Also fixed a latent gap here: arm/insulator meshes added by `addArm` now get
+  `castShadow = true` set directly, since the constructor's one-time shadow traversal
+  only covers geometry that exists at construction — every tier-upgrade arm added since
+  Wave 6 shipped had silently never cast a shadow until this fix.
 - **`catenary.ts`** — pure math, no scene dependency beyond `THREE.Vector3` for the
   return type. `computeCatenaryPoints(p1, p2, sagRatio, segments)` solves the catenary
   parameter `a` via Newton's method (parabolic initial guess) and samples points along
@@ -245,6 +260,31 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   "place a tower" → "place a second" → "string a span between them" → nothing, once
   `spans.length > 0`. No persistence needed — the underlying state it reads already is.
   Plain DOM (`innerHTML` + `querySelector`), no framework — not worth one for this much UI.
+- **`Guide.ts`** (new) — the first *interactive* DOM UI in the project (`Hud` is
+  read-only). Unlike `Hud`'s `pointer-events: none` shell, `Guide` owns its own
+  `pointer-events: auto` elements: a small `?` button (top-right) and a full-screen
+  backdrop overlay containing the panel, both appended directly to `container` alongside
+  `Hud`'s root — deliberately its own class, not folded into `Hud`, since `Hud` is a
+  read-only status meter and this is the project's first real interactive overlay.
+  Content is `GUIDE.md` (repo root) imported at build time via Vite's built-in `?raw`
+  import (`import guideMd from '../../GUIDE.md?raw'` — no extra type declaration needed,
+  `vite/client`'s ambient types already declare `*?raw` generically) and rendered through
+  `markdown.ts`. `close()`/`toggle()`/`isOpen()` are public; `Game.onKeyDown` checks
+  `this.guide.isOpen()` as its very first line and returns early if so — this is a
+  `window`-level listener, so DOM stacking order alone doesn't suppress it the way it
+  naturally suppresses canvas clicks/pointermoves (those never reach the canvas element
+  at all once the overlay covers it, no extra code needed there). Verified this
+  explicitly with a real selected, upgradeable tower: `U` does nothing while the guide
+  is open. Escape-to-close is Guide's own `window` keydown listener, independent of
+  `Game`'s.
+- **`markdown.ts`** (new) — a tiny hand-rolled Markdown→HTML converter, not a
+  general-purpose parser: `#`/`##` headers, `- ` bullet lists (consecutive lines grouped
+  into one `<ul>`), `**bold**`, `` `inline code` ``, and blank-line-separated paragraphs.
+  Escapes `&`/`</>` first, then layers on the `<strong>`/`<code>` substitutions, so
+  GUIDE.md's own content can't inject markup. No dependency added — extends the
+  project's existing "hand-write the math" precedent (catenary solver, terrain noise,
+  procedural audio) into markdown rendering, appropriate for a few hundred words of
+  static, single-author content.
 - **`feedback.ts`** (Phase 2) — `denyShakeOffset(elapsedMs)`, a decaying sine-wave
   horizontal offset shared by `Tower` (denied upgrade/span) and `Game`'s ghost preview
   (denied placement) so both use identical shake timing/feel from one place.
@@ -1071,6 +1111,62 @@ required. `tsc --noEmit` clean throughout; no console errors at any point (the t
 debug `console.log` calls added mid-investigation were removed before this was
 considered done).
 
+## Player guide + upgraded pole visuals
+
+Two requests after the "10x expansion" closed out — not part of the six-wave plan.
+
+**Player guide.** `GUIDE.md` (repo root) is the single source of truth; there is no
+separate in-game copy. `Guide.ts` imports it as raw text at build time
+(`?raw`) and renders it through the new `markdown.ts` (see the architecture bullets
+above for both). Design choices worth remembering:
+
+- **One source of truth, not two.** The alternative — writing guide content twice
+  (once as prose for a human, once as HTML/TS for the in-game panel) — would drift the
+  way any hand-duplicated content eventually drifts. A raw import plus a tiny renderer
+  costs less than that duplication risk, and keeps the same discipline `PLAN.md`/
+  `HANDOVER.md` already follow: real files, not embedded strings, so they're diffable
+  and readable outside the game.
+  - This is now the **third** standing "keep this doc current" instruction on the
+    project (see the new `feedback-maintain-ingame-guide` memory) — same shape as the
+    `PLAN.md`/`HANDOVER.md` instruction, extended to a third artifact. Update `GUIDE.md`
+    whenever gameplay mechanics change, not just when asked.
+- **No new dependency for markdown.** GUIDE.md's actual needs are five constructs
+  (h1/h2, bullets, bold, inline code, paragraphs) — a full markdown library would be
+  overkill for that. One deliberate content constraint fell out of this: the guide's
+  hotkey table was originally written as a markdown table, then rewritten as a bullet
+  list once it became clear the renderer wouldn't support tables and adding table
+  support for one section wasn't worth it. Future guide edits should stay within the
+  five supported constructs, or `markdown.ts` needs a deliberate extension first.
+- **Interactive overlay, not folded into `Hud`.** `Hud` has been `pointer-events: none`
+  since Phase 2 — a read-only status meter, matching the project's explicit "no menus"
+  interaction philosophy. A help button breaks that philosophy in the narrowest possible
+  way (opt-in, non-blocking, doesn't interrupt the core loop), so it got its own class
+  with its own `pointer-events: auto` elements rather than compromising `Hud`'s
+  read-only contract.
+- **Keyboard gating was the one real risk here.** The overlay's DOM stacking already
+  blocks canvas clicks/pointermoves from reaching the canvas once it's visible (they hit
+  the backdrop instead, at the hit-testing level — no code needed). But `Game.onKeyDown`
+  listens on `window`, which DOM stacking doesn't affect at all — without an explicit
+  guard, reading the guide while a tower happened to be selected could have silently
+  triggered `U`/`I` upgrades, or worse, `Shift+R` could have wiped the save entirely.
+  Fixed with one line at the very top of `onKeyDown`. Verified deliberately, not just
+  assumed: placed a real tower, selected it, opened the guide, dispatched a real `u`
+  keydown, and confirmed both the tower's tier and CapEx were unchanged — a no-op
+  because no tower was selected would have looked identical to a working guard, so the
+  test was built specifically to rule that out.
+
+**Upgraded pole visuals.** Every tier-upgrade arm now hangs insulator nubs — the same
+detail `buildTowerVisual`'s top arm already had since Phase 4 — with the count on each
+arm set to exactly the capacity *gained* at that step (`ArmSpec.insulatorCount`, see the
+`Tower.ts` architecture bullet above). The elegant part of this design: it isn't
+decorative scaling, it's an *exact* accounting — 2 (top arm, tier 1) + 2 (tier 1→2 arm)
++ 4 (Capacity tier-2→3 arm) sums to exactly 8, matching `hasFreeCapacity()`'s real
+ceiling; the Resilience branch's second arm carries zero insulators on purpose, visually
+distinguishing "more lines" (Capacity) from "the same lines, reinforced" (Resilience).
+Verified by direct capacity-fill tests at all four tier/branch combinations (2/4/8/6),
+each exactly matching the counted insulator meshes, not just eyeballed from a
+screenshot — the screenshot was a secondary confirmation, not the primary one.
+
 ## Skills used this session
 
 - `design-game-design-fundamentals` — shaped the action→feedback→reward pacing
@@ -1140,7 +1236,11 @@ Wave 2: see the "10x expansion — Wave 2" section above. Confirmed working, Wav
 the "10x expansion — Wave 3" section above. Confirmed working, Wave 4: see the "10x
 expansion — Wave 4" section above. Confirmed working, Wave 5: see the "10x expansion —
 Wave 5" section above. Confirmed working, Wave 6 (the last one): see the "10x expansion
-— Wave 6" section above. No automated tests exist yet.
+— Wave 6" section above. Confirmed working, player guide + pole visuals: see the
+dedicated section above — notably, the guide's button/close/backdrop *are* real DOM
+elements with stable CSS selectors, so `preview_click` worked directly on them (unlike
+the canvas, which needs synthetic events dispatched through `preview_eval`). No
+automated tests exist yet.
 
 A temporary debug hook (`window.__game`) was added each phase to get exact screen
 coordinates for synthetic clicks or to call internal methods directly, then removed
@@ -1253,6 +1353,15 @@ trust wall-clock `sleep` alone to advance game time.
   (`vite build` already warns the JS bundle is >500kB post-minification, all of
   three.js) — fine for a personal project on GitHub Pages' CDN, worth revisiting if
   load time ever becomes a real complaint.
+- `GUIDE.md`'s actual prose hasn't been read end-to-end by a human for accuracy or
+  tone — it was written to be comprehensive and correct against the current mechanics,
+  verified to *render* correctly, but not proofread as writing.
+- No mobile/touch consideration for the guide panel — it scrolls and closes correctly
+  at the desktop viewport sizes tested, but hasn't been checked at narrow widths where
+  the fixed `min(560px, 90vw)` panel width and the right-click-to-pan camera control
+  mentioned in the guide itself would both need real touch-input rethinking. The whole
+  project has been desktop-only so far; this doesn't change that, just flagging it
+  explicitly now that there's a text-heavy overlay to consider.
 
 ## Maintenance note
 
