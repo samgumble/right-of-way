@@ -254,6 +254,31 @@ Wave 5 just needs to read it.
 Waves 5–6 (economy depth, upgrade branching) are planned but not yet built — see
 HANDOVER.md for the full per-wave breakdown before starting the next one.
 
+**Wave 5 — Economy depth: delivered.** All three items, exactly as scoped — pure
+`constants.ts` + selection-math changes, zero `SaveData` schema impact.
+
+1. **Repeat-construction cost curve** — `ECONOMY.towerCostGrowthPerTower = 0.06` adds
+   mild linear growth per already-placed tower on top of the terrain multiplier (e.g.
+   $80 base → $176 at 20 towers on flat ground). The two near-duplicated cost
+   calculations in `onPointerMove`/`onClick` were also merged into one
+   `computeTowerCost()` helper while making this change.
+2. **Terrain-weighted storm targeting** — a span with at least one endpoint on Wave 4's
+   marsh terrain is `STORM.marshWeightMultiplier = 2.5`× more likely to be picked as a
+   storm's target than a span with none, via a new weighted-random selection
+   (`pickWeightedStormTarget`) replacing the old uniform pick.
+3. **Storm interval scaling** — both interval bounds shrink toward a hard
+   `STORM.minIntervalFloorSec = 12` floor as the energized-span count grows (an
+   exponential approach, not a subtraction, so the bounds can't cross or invert). Still
+   strikes at most one span per storm — interval-only scaling, exactly as the plan
+   required to avoid reopening the softlock the balance revisit fixed.
+
+Verified live and statistically, not just read back from source: the cost curve at five
+sampled tower counts; storm-target weighting via 2000 forced samples (2.64 observed
+ratio against a 2.5 expected one); interval scaling at low and high energized-span
+counts, including confirming it approaches but never crosses the 12s floor; and — the
+non-negotiable one — 300 forced storm attempts against a single energized span with zero
+strikes, confirming the softlock-prevention invariant holds under all the new wiring.
+
 ## Phase 5 scope (delivered)
 
 You asked to figure out storage/hosting. Save-data storage was already solved
@@ -279,9 +304,10 @@ needs a paid GitHub plan, and there's nothing sensitive in this repo).
 
 ## Up next
 
-Wave 5 (economy depth — a repeat-construction cost curve, terrain-weighted storm
-targeting using Wave 4's new `marsh` classification, and storm severity scaling) is next
-per the approved 10x plan. Revisit HANDOVER.md's "10x expansion" section for the exact
-scope before starting — Wave 5's storm severity scaling must **not** reopen the softlock
-invariant (interval-only scaling, never multi-strike-per-storm, per the plan's explicit
-constraint).
+Wave 6 (upgrade tree branching — Capacity vs. Resilience at tier 2→3) is next per the
+approved 10x plan, and the last wave in it. Revisit HANDOVER.md's "10x expansion"
+section for the exact scope before starting — the plan flags `Tower.canUpgrade()`'s
+restructuring (from one boolean to a branch-aware check) as the one genuinely
+non-trivial piece, and the schema gains one new optional field
+(`towers[].branch?: 'capacity' | 'resilience'`) that must stay safely absent/undefined
+on every pre-Wave-6 save with no migration needed.

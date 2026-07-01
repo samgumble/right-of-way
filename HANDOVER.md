@@ -1,9 +1,9 @@
 # Handover
 
 Last updated: 2026-07-01. Phase 4 is fully done; Phase 5 (hosting, GitHub Pages) is done;
-the "10x expansion" (six-wave plan, see below) is in progress — Waves 1–4 (audio;
-lighting/materials/atmosphere; particles/weather; terrain depth) delivered, Waves 5–6
-planned but not built.
+the "10x expansion" (six-wave plan, see below) is in progress — Waves 1–5 (audio;
+lighting/materials/atmosphere; particles/weather; terrain depth; economy depth)
+delivered, Wave 6 (the last one) planned but not built.
 
 Read [PLAN.md](PLAN.md) first for roadmap/status. This doc is the "how it works and
 why" for whoever (human or Claude) picks this project up next.
@@ -83,7 +83,13 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
   sites (placement success in `onClick`, `permitCleared` in `tick()`'s tower loop, and a
   storm's fault in `triggerStorm()`), and `updateRain(now, dt)` / `updateBursts(now)`
   called every tick right after the storm check — the same "call it every frame, it's a
-  no-op unless something's active" idiom `updateFaultAlarm` already established.
+  no-op unless something's active" idiom `updateFaultAlarm` already established. And
+  (Wave 5) a `computeTowerCost(node)` helper (replacing two near-duplicated inline cost
+  calculations in `onPointerMove`/`onClick`) that folds in linear growth from
+  `this.towers.length`; `spanStormWeight(record)` / `pickWeightedStormTarget(candidates)`
+  for terrain-weighted storm selection, called from `triggerStorm()` in place of the old
+  uniform `Math.random()` pick; and the free function `randomStormDelayMs(energizedCount)`
+  (was zero-arg) now scales both interval bounds toward `STORM.minIntervalFloorSec`.
 - **`CameraRig.ts`** — fixed-angle orthographic isometric camera. Never rotates.
   Right-drag pans (pointerdown/move/up gated on `button === 2`) directly/1:1 — easing an
   active drag would feel laggy, so pan is intentionally *not* eased. Scroll wheel sets a
@@ -193,6 +199,9 @@ Everything lives under `src/game/`, orchestrated by `src/main.ts` which just doe
 - **`constants.ts`** — all color/size/economy magic numbers live here: `COLORS`,
   `GRID`, `TOWER_HEIGHT`, `ECONOMY`, `DENY_SHAKE_DURATION_MS`, `TERRAIN`, `STORM`,
   `PERMIT` (Phase 3), `ATMOSPHERE`, `SHADOW` (Wave 2), `RAIN`, `PARTICLE_BURST` (Wave 3).
+  `ECONOMY.towerCostGrowthPerTower` and `STORM.minIntervalFloorSec`/
+  `intervalHalfLifeSpanCount`/`marshWeightMultiplier` (Wave 5) are all pure tuning
+  values — no schema/persistence impact, same pattern as every other constant here.
 - **`Economy.ts`** (Phase 2) — tiny state holder for `capEx` and `crewHours`.
   `canAfford(capExCost, crewHoursCost)`, `spend(...)`, and `tick(dt, energizedSpanCount)`
   which adds passive CapEx income (per energized span per second) and regenerates
@@ -895,6 +904,62 @@ tower and CapEx override were both cleaned up afterward, leaving the legitimate
 single-tower save state from Wave 3's verification intact. `tsc --noEmit` clean; no
 console errors.
 
+### Wave 5 — Economy depth (delivered)
+
+All three items exactly as scoped in the plan — pure `constants.ts` + selection-math
+changes, **zero `SaveData` schema impact**, `SAVE_VERSION` stays at 1.
+
+- **Repeat-construction cost curve**: `ECONOMY.towerCostGrowthPerTower = 0.06` — mild
+  linear growth (not exponential), applied on top of the existing terrain multiplier, not
+  persisted (derived live from `this.towers.length` every time `computeTowerCost` is
+  called). Merging the two near-duplicated cost calculations in `onPointerMove` (ghost
+  preview opacity) and `onClick` (actual spend) into one helper was a direct side effect
+  of touching both — not a separate cleanup pass.
+- **Terrain-weighted storm targeting**: `pickWeightedStormTarget` replaces the old
+  uniform `candidates[Math.floor(Math.random() * candidates.length)]` pick with a
+  standard cumulative-weight roll. `spanStormWeight` reads `Grid.terrainAt()` on both of
+  a span's tower endpoints (Wave 4's `Grid.terrainAt()` being already public is exactly
+  why Wave 4's writeup said "no new plumbing needed" for this) — a span with *either*
+  endpoint on marsh gets `STORM.marshWeightMultiplier = 2.5`× the weight of a span with
+  neither. A persistent per-span decaying "efficiency" stat was considered (per the plan)
+  and rejected — it would start rhyming with a hidden new resource, out of scope for
+  "deepen, don't add breadth."
+- **Storm interval scaling**: `randomStormDelayMs` changed from a zero-argument function
+  to `randomStormDelayMs(energizedCount)`. Both interval bounds shrink toward
+  `STORM.minIntervalFloorSec = 12` via an *exponential* approach
+  (`Math.pow(0.5, energizedCount / STORM.intervalHalfLifeSpanCount)`), not a linear
+  subtraction — chosen specifically so neither bound can ever cross the floor or invert
+  relative to the other, with no separate clamping logic needed to guarantee that.
+  **Interval-only** — `triggerStorm()`'s "at most one span struck, only if
+  `candidates.length >= minEnergizedSpansToStrike`" shape is completely unchanged; only
+  *which* target gets picked and *how soon* the next storm is scheduled changed. This
+  was a hard constraint from the plan, not a judgment call: multi-strike-per-storm is
+  exactly the shape of change that reopened-risk the softlock the balance revisit fixed,
+  and was explicitly called out as needing its own review if ever wanted, not bundled
+  into this wave.
+
+**Verification:** every claim was checked statistically or via direct state inspection,
+not read back from source. Cost curve sampled at five tower counts (0/1/5/10/20 →
+80/85/104/128/176, matching the formula exactly). Storm-target weighting sampled 2000
+times against a constructed marsh-adjacent-span vs. plain-flat-span pair — 2.64 observed
+ratio against a 2.5 expected one, within normal statistical noise for that sample size.
+Interval scaling sampled at energized counts of 1 and 2 (means of 29.6s and 26.6s,
+falling inside the theoretically computed bounds for each), then stress-tested at 50
+energized candidates (via a temporarily aliased fake `spans` array, restored afterward)
+to confirm the interval collapses to just above the floor (12.03–12.09s) and never
+crosses below it. **The non-negotiable check**: 300 forced `triggerStorm()` calls against
+a single energized span (all other spans faulted) produced zero strikes — the
+softlock-prevention invariant holds unchanged under every piece of new wiring. One
+real mistake made and recovered from during this verification pass: an early test
+mutated the live `towers` array directly to sample cost-at-N-towers, and the periodic
+autosave (which was still running, since the animation loop hadn't been paused) raced
+in and persisted the corrupted empty state to `localStorage`, silently losing a tower
+placed during earlier-wave testing. Not a product bug — a real one, just self-inflicted
+by not pausing `renderer.setAnimationLoop` before mutating live arrays. Fixed by adopting
+"always pause the loop before mutating `towers`/`spans` directly" for the rest of this
+verification pass, and documented here so it isn't relearned the hard way again. `tsc
+--noEmit` clean throughout; no console errors.
+
 ## Skills used this session
 
 - `design-game-design-fundamentals` — shaped the action→feedback→reward pacing
@@ -962,7 +1027,8 @@ selected-tower emissive glow blooms visibly against the dark background. Confirm
 working, Wave 1: see the "10x expansion — Wave 1" section above. Confirmed working,
 Wave 2: see the "10x expansion — Wave 2" section above. Confirmed working, Wave 3: see
 the "10x expansion — Wave 3" section above. Confirmed working, Wave 4: see the "10x
-expansion — Wave 4" section above. No automated tests exist yet.
+expansion — Wave 4" section above. Confirmed working, Wave 5: see the "10x expansion —
+Wave 5" section above. No automated tests exist yet.
 
 A temporary debug hook (`window.__game`) was added each phase to get exact screen
 coordinates for synthetic clicks or to call internal methods directly, then removed
@@ -1012,12 +1078,10 @@ trust wall-clock `sleep` alone to advance game time.
 - Storms have no warning telegraph — they strike instantly and unpredictably by design
   (uncertainty is the point), but a brief "storm incoming" cue could be added later for
   fairness/anticipation without changing the core mechanic.
-- Terrain is still purely a cost/buildability modifier as of Wave 4 (marsh added a
-  *fourth* one-time-cost terrain type, but didn't change the underlying "cost at
-  placement, nothing else" shape) — span cost still isn't affected by terrain crossed,
-  only raw distance. Wave 5 is specifically scoped to change this (terrain-weighted
-  storm targeting reading `Grid.terrainAt()`), so this gap should close there rather
-  than needing separate follow-up work.
+- Terrain now affects more than one-time placement cost — Wave 5's terrain-weighted
+  storm targeting reads `Grid.terrainAt()` on a span's endpoints. What's still true: span
+  *cost* itself isn't affected by terrain crossed, only raw distance (that specific gap
+  from the original list remains open; storm-targeting was the piece that got addressed).
 - Permits can't be canceled/refunded once placed, and permitting is universal (no
   zone-specific variation) — both deliberate scope cuts for the first pass, see
   "Permitting" above for the reasoning.
@@ -1032,14 +1096,18 @@ trust wall-clock `sleep` alone to advance game time.
   (no exceptions, correct event timing via console/state inspection), since this tool
   chain can't actually hear sound. Treat the synthesis design as unvalidated-by-ear
   until you've played with sound on.
-- Waves 5-6 of the "10x expansion" (economy depth, upgrade-tree branching) are planned
-  in full at
-  `/Users/samgumble/.claude/plans/fancy-wandering-dawn.md` but not yet built.
+- Wave 6 of the "10x expansion" (upgrade-tree branching — the last wave) is planned in
+  full at `/Users/samgumble/.claude/plans/fancy-wandering-dawn.md` but not yet built.
 - Marsh's threshold/cost-multiplier values (`TERRAIN.marshThreshold = -0.55`,
   `marshCostMultiplier = 2.1`) are first-pass, chosen to produce a reasonable-looking
   distribution (61/441 nodes) and a cost that reads as "pricier than a hill" — not
   validated against real economy pacing the way `ECONOMY`'s own numbers were flagged as
   unvalidated back in Phase 2/3.
+- Wave 5's new numbers (`towerCostGrowthPerTower = 0.06`, `marshWeightMultiplier = 2.5`,
+  `minIntervalFloorSec = 12`, `intervalHalfLifeSpanCount = 6`) are all first-pass —
+  verified to *do what they're supposed to do* (statistically confirmed above), not
+  validated as *fun/well-balanced* by real play. Same caveat as every other tuning
+  constant in this project so far.
 - Rain's particle count (220), speed, and wind-drift constants are first-pass values,
   tuned by eye against screenshots taken via the synthetic-clock technique described in
   Wave 3's verification notes — not validated against a real, unpaused, real-time storm.

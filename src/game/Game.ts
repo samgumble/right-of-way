@@ -44,9 +44,14 @@ function findSpanRoot(obj: THREE.Object3D): THREE.Object3D | null {
   return o;
 }
 
-function randomStormDelayMs(): number {
-  const span = STORM.maxIntervalSec - STORM.minIntervalSec;
-  return (STORM.minIntervalSec + Math.random() * span) * 1000;
+/** Both interval bounds shrink toward `minIntervalFloorSec` as `energizedCount` grows —
+ * an exponential approach (never a subtraction), so neither bound can cross the floor or
+ * invert relative to the other, and no separate clamping is needed. */
+function randomStormDelayMs(energizedCount: number): number {
+  const scale = Math.pow(0.5, energizedCount / STORM.intervalHalfLifeSpanCount);
+  const min = STORM.minIntervalFloorSec + (STORM.minIntervalSec - STORM.minIntervalFloorSec) * scale;
+  const max = STORM.minIntervalFloorSec + (STORM.maxIntervalSec - STORM.minIntervalFloorSec) * scale;
+  return (min + Math.random() * (max - min)) * 1000;
 }
 
 export class Game {
@@ -211,13 +216,20 @@ export class Game {
     return this.spans.find(({ span }) => span.group === root) ?? null;
   }
 
+  /** Base tower cost gains mild linear growth per already-placed tower, on top of the
+   * terrain multiplier — expansion gets steadily pricier without being punishing. */
+  private computeTowerCost(node: GridNode): number {
+    const growth = 1 + this.towers.length * ECONOMY.towerCostGrowthPerTower;
+    return Math.round(ECONOMY.towerCost * growth * this.grid.towerCostMultiplier(node.i, node.j));
+  }
+
   private onPointerMove = (e: MouseEvent): void => {
     this.updateNdc(e);
     const node = this.raycastGroundNode();
     if (node && this.grid.isBuildable(node.i, node.j)) {
       this.ghostBasePos.copy(node.world);
       this.ghost.visible = true;
-      const cost = Math.round(ECONOMY.towerCost * this.grid.towerCostMultiplier(node.i, node.j));
+      const cost = this.computeTowerCost(node);
       this.ghostMaterial.opacity = this.economy.canAfford(cost, 0) ? 0.35 : 0.15;
     } else {
       this.ghost.visible = false;
@@ -241,7 +253,7 @@ export class Game {
 
     const node = this.raycastGroundNode();
     if (node && this.grid.isBuildable(node.i, node.j)) {
-      const cost = Math.round(ECONOMY.towerCost * this.grid.towerCostMultiplier(node.i, node.j));
+      const cost = this.computeTowerCost(node);
       if (this.economy.canAfford(cost, 0)) {
         this.economy.spend(cost, 0);
         this.placeTower(node);
@@ -378,17 +390,36 @@ export class Game {
     this.save();
   }
 
+  /** A span with at least one endpoint on marsh (wet/unstable ground) is more likely to
+   * be picked as a storm's target — terrain-weighted, not uniform. */
+  private spanStormWeight(record: SpanRecord): number {
+    const aMarsh = this.grid.terrainAt(record.a.gridI, record.a.gridJ) === 'marsh';
+    const bMarsh = this.grid.terrainAt(record.b.gridI, record.b.gridJ) === 'marsh';
+    return aMarsh || bMarsh ? STORM.marshWeightMultiplier : 1;
+  }
+
+  private pickWeightedStormTarget(candidates: SpanRecord[]): SpanRecord {
+    const weights = candidates.map((c) => this.spanStormWeight(c));
+    const total = weights.reduce((sum, w) => sum + w, 0);
+    let roll = Math.random() * total;
+    for (let i = 0; i < candidates.length; i++) {
+      roll -= weights[i];
+      if (roll <= 0) return candidates[i];
+    }
+    return candidates[candidates.length - 1]; // floating-point fallback, never reached in practice
+  }
+
   private triggerStorm(now: number): void {
     const candidates = this.spans.filter(({ span }) => span.isEnergized());
     if (candidates.length >= STORM.minEnergizedSpansToStrike) {
-      const target = candidates[Math.floor(Math.random() * candidates.length)];
+      const target = this.pickWeightedStormTarget(candidates);
       target.span.fault();
       this.sound.playStormStrike();
       this.spawnBurst(target.span.midpoint(), 'spark', now);
       this.startRain(now);
       this.save();
     }
-    this.nextStormAt = now + randomStormDelayMs();
+    this.nextStormAt = now + randomStormDelayMs(candidates.length);
   }
 
   private deselect(): void {

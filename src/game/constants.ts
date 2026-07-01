@@ -28,6 +28,10 @@ export const ECONOMY = {
   crewHoursRegenPerSec: 4,
   capExIncomePerSpanPerSec: 3,
   towerCost: 80,
+  /** Mild linear growth per already-placed tower — expansion gets steadily pricier
+   * without being exponentially punishing. Applied on top of terrain cost multipliers,
+   * not persisted (derived live from `towers.length`). */
+  towerCostGrowthPerTower: 0.06,
   spanCostBase: 10,
   spanCostPerUnitDistance: 0.6,
   towerMaxTier: 3,
@@ -67,6 +71,19 @@ export const STORM = {
    * income (which only comes from energized spans) can never be knocked to zero with no
    * way to recover — repairing itself costs CapEx. */
   minEnergizedSpansToStrike: 2,
+  /** Storm interval scaling (Wave 5): both interval bounds shrink toward this floor as
+   * the energized-span count grows — a bigger network draws storms more often. Scaling
+   * is interval-only; a storm still ever strikes at most one span, never more. Multi-
+   * strike-per-storm would risk reopening the softlock the balance revisit fixed — if
+   * ever wanted later, it needs its own explicit review, not folded into this wave. */
+  minIntervalFloorSec: 12,
+  /** Energized-span count at which the interval has closed half the remaining gap to
+   * the floor (exponential approach, so bounds can never cross or go below the floor). */
+  intervalHalfLifeSpanCount: 6,
+  /** Storm-target weighting (Wave 5): a span with at least one endpoint on marsh
+   * (wet/unstable ground — see Wave 4) is this many times more likely to be picked as
+   * the storm's target than a span with no marsh endpoint. */
+  marshWeightMultiplier: 2.5,
 } as const;
 
 export const PERMIT = {
