@@ -7,3 +7,12 @@ export function denyShakeOffset(elapsedMs: number): number {
   const decay = 1 - t;
   return Math.sin(t * Math.PI * 6) * 0.18 * decay;
 }
+
+/** Overshoot-then-settle easing, shared by every entity's spawn/pop-in animation
+ * (Tower, and now PowerPlant/Neighborhood/Substation) so they all share one "just
+ * appeared" feel instead of each defining their own copy. */
+export function easeOutBack(x: number): number {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
+}

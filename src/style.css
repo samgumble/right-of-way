@@ -79,6 +79,13 @@ canvas {
   border-color: #2a4a5e;
 }
 
+/* Milestone progress — energized-green rather than orange (selection) or red
+   (danger/warning), a positive/progress framing distinct from both. */
+.hud-note--objective {
+  color: #4c9a6e;
+  border-color: #2a4a5e;
+}
+
 .hud-note--fault {
   color: #c0453a;
   border-color: #c0453a;

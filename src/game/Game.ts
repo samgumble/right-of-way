@@ -5,10 +5,13 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
-import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, ECONOMY, GRID, PERMIT, RAIN, SHADOW, STORM, TOWER_HEIGHT } from './constants';
+import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, ECONOMY, GRID, NEIGHBORHOOD, OBJECTIVE, PERMIT, RAIN, SHADOW, STORM, SUBSTATION, TOWER_HEIGHT } from './constants';
 import { Grid, type GridNode } from './Grid';
 import { Tower, buildTowerVisual, type TowerBranch } from './Tower';
 import { Span } from './Span';
+import { PowerPlant, pickRandomFuelType, type FuelType } from './PowerPlant';
+import { Neighborhood } from './Neighborhood';
+import { Substation, buildSubstationVisual } from './Substation';
 import { IsoCameraRig } from './CameraRig';
 import { Economy } from './Economy';
 import { Hud } from './Hud';
@@ -17,6 +20,7 @@ import { SoundManager } from './SoundManager';
 import { ParticleBurst, type BurstStyle } from './ParticleBurst';
 import { denyShakeOffset } from './feedback';
 import { clearSave, loadGame, saveGame, type SaveData } from './Persistence';
+import { computeMaxBottleneck, isSubstationRedundant, type GraphEdge, type GraphNode, type NetworkGraph } from './network';
 
 const AUTOSAVE_INTERVAL_MS = 3000;
 const UNIT_SCALE = new THREE.Vector3(1, 1, 1);
@@ -25,6 +29,47 @@ interface SpanRecord {
   span: Span;
   a: Tower;
   b: Tower;
+}
+
+/** A milestone: a specific Plant+Neighborhood pair plus a fixed win threshold.
+ * `targetDemandMW` is distinct from the Neighborhood's own live `currentDemandMW()` —
+ * completion is about reaching/holding that fixed target under full redundancy, not a
+ * moving goalpost (the goalpost itself only starts moving once Wave 7 adds demand
+ * growth). `completedAt` is `null` while active; `performance.now()`-valued once done. */
+interface Objective {
+  id: string;
+  plant: PowerPlant;
+  neighborhood: Neighborhood;
+  targetDemandMW: number;
+  completedAt: number | null;
+}
+
+/** Anything that can be strung into the transmission network — Tower (existing),
+ * Substation and PowerPlant (Wave 2). All three already share `topPos`/`gridI`/`gridJ`/
+ * `hasFreeCapacity()`/`addConnection()`/`denyFeedback()` by construction. */
+type TxNode = Tower | Substation | PowerPlant;
+
+/** Any transmission-tier span touching a Substation and/or PowerPlant on at least one
+ * end — pure Tower-Tower spans stay in `SpanRecord`/`Game.spans`, completely unchanged. */
+interface TransmissionLinkRecord {
+  span: Span;
+  a: TxNode;
+  b: TxNode;
+}
+
+/** A Substation-to-Neighborhood distribution span — at most one per Neighborhood by
+ * design (see PLAN.md's topology decision). */
+interface DistributionSpanRecord {
+  span: Span;
+  substation: Substation;
+  neighborhood: Neighborhood;
+}
+
+/** Structural shape shared by every span endpoint kind, for the generalized
+ * repair/upgrade-throughput deny feedback that now has to work across three different
+ * record shapes (`SpanRecord`/`TransmissionLinkRecord`/`DistributionSpanRecord`). */
+interface DenyableEndpoint {
+  denyFeedback(): void;
 }
 
 function isValidGridNode(i: number, j: number): boolean {
@@ -42,6 +87,24 @@ function findTowerRoot(obj: THREE.Object3D): THREE.Object3D | null {
 function findSpanRoot(obj: THREE.Object3D): THREE.Object3D | null {
   let o: THREE.Object3D | null = obj;
   while (o && !o.userData.isSpan) o = o.parent;
+  return o;
+}
+
+function findPlantRoot(obj: THREE.Object3D): THREE.Object3D | null {
+  let o: THREE.Object3D | null = obj;
+  while (o && !o.userData.isPlant) o = o.parent;
+  return o;
+}
+
+function findNeighborhoodRoot(obj: THREE.Object3D): THREE.Object3D | null {
+  let o: THREE.Object3D | null = obj;
+  while (o && !o.userData.isNeighborhood) o = o.parent;
+  return o;
+}
+
+function findSubstationRoot(obj: THREE.Object3D): THREE.Object3D | null {
+  let o: THREE.Object3D | null = obj;
+  while (o && !o.userData.isSubstation) o = o.parent;
   return o;
 }
 
@@ -81,10 +144,29 @@ export class Game {
   private readonly spannedPairs = new Set<string>();
   private selectedTower: Tower | null = null;
 
+  private readonly plants: PowerPlant[] = [];
+  private readonly neighborhoods: Neighborhood[] = [];
+  private readonly substations: Substation[] = [];
+  private selectedPlant: PowerPlant | null = null;
+  private selectedNeighborhood: Neighborhood | null = null;
+  private selectedSubstation: Substation | null = null;
+
+  private readonly transmissionLinks: TransmissionLinkRecord[] = [];
+  private readonly distributionSpans: DistributionSpanRecord[] = [];
+  /** Neighborhood ids with an existing distribution span — at most one per Neighborhood
+   * (the plan's topology decision), mirroring `spannedPairs`'s role for transmission. */
+  private readonly connectedNeighborhoods = new Set<string>();
+
+  private readonly objectives: Objective[] = [];
+  /** Set when the active objective completes; cleared once the next pair spawns. */
+  private nextObjectiveSpawnAt: number | null = null;
+
   private readonly raycaster = new THREE.Raycaster();
   private readonly pointerNdc = new THREE.Vector2();
   private readonly ghost: THREE.Group;
   private readonly ghostMaterial: THREE.MeshStandardMaterial;
+  private readonly substationGhost: THREE.Group;
+  private readonly substationGhostMaterial: THREE.MeshStandardMaterial;
   private readonly ghostBasePos = new THREE.Vector3();
   private ghostDenyStart: number | null = null;
   private readonly container: HTMLElement;
@@ -167,12 +249,25 @@ export class Game {
     this.ghost.visible = false;
     this.scene.add(this.ghost);
 
+    this.substationGhostMaterial = new THREE.MeshStandardMaterial({
+      color: COLORS.steelBlue,
+      transparent: true,
+      opacity: 0.35,
+      roughness: 0.5,
+      metalness: 0.45,
+    });
+    this.substationGhost = buildSubstationVisual(this.substationGhostMaterial);
+    this.substationGhost.visible = false;
+    this.scene.add(this.substationGhost);
+
     const fallDir = new THREE.Vector3(RAIN.windDriftX, -RAIN.fallSpeed, RAIN.windDriftZ).normalize();
     this.rainQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), fallDir);
     this.rainMesh = this.buildRain();
     this.scene.add(this.rainMesh);
 
     this.loadSavedGame();
+    this.spawnObjectiveEntities();
+    this.recomputeNetworkState();
 
     this.bindInput();
     window.addEventListener('resize', this.onResize);
@@ -213,15 +308,63 @@ export class Game {
     return this.towers.find((t) => t.group === root) ?? null;
   }
 
-  private raycastSpan(): SpanRecord | null {
+  /** Every span across all three span-bearing arrays, reduced to just what raycasting
+   * and click-repair/upgrade actually need — recomputed fresh per call (cheap at this
+   * entity count) rather than maintained as separate state. */
+  private allSpanHits(): { span: Span; endpoints: DenyableEndpoint[] }[] {
+    return [
+      ...this.spans.map(({ span, a, b }) => ({ span, endpoints: [a, b] })),
+      ...this.transmissionLinks.map(({ span, a, b }) => ({ span, endpoints: [a, b] })),
+      ...this.distributionSpans.map(({ span, substation, neighborhood }) => ({
+        span,
+        endpoints: [substation, neighborhood],
+      })),
+    ];
+  }
+
+  private raycastSpan(): { span: Span; endpoints: DenyableEndpoint[] } | null {
+    const candidates = this.allSpanHits();
     this.raycaster.setFromCamera(this.pointerNdc, this.cameraRig.camera);
     const hits = this.raycaster.intersectObjects(
-      this.spans.map(({ span }) => span.group),
+      candidates.map((c) => c.span.group),
       true,
     );
     if (!hits.length) return null;
     const root = findSpanRoot(hits[0].object);
-    return this.spans.find(({ span }) => span.group === root) ?? null;
+    return candidates.find((c) => c.span.group === root) ?? null;
+  }
+
+  private raycastPlant(): PowerPlant | null {
+    this.raycaster.setFromCamera(this.pointerNdc, this.cameraRig.camera);
+    const hits = this.raycaster.intersectObjects(
+      this.plants.map((p) => p.group),
+      true,
+    );
+    if (!hits.length) return null;
+    const root = findPlantRoot(hits[0].object);
+    return this.plants.find((p) => p.group === root) ?? null;
+  }
+
+  private raycastNeighborhood(): Neighborhood | null {
+    this.raycaster.setFromCamera(this.pointerNdc, this.cameraRig.camera);
+    const hits = this.raycaster.intersectObjects(
+      this.neighborhoods.map((n) => n.group),
+      true,
+    );
+    if (!hits.length) return null;
+    const root = findNeighborhoodRoot(hits[0].object);
+    return this.neighborhoods.find((n) => n.group === root) ?? null;
+  }
+
+  private raycastSubstation(): Substation | null {
+    this.raycaster.setFromCamera(this.pointerNdc, this.cameraRig.camera);
+    const hits = this.raycaster.intersectObjects(
+      this.substations.map((s) => s.group),
+      true,
+    );
+    if (!hits.length) return null;
+    const root = findSubstationRoot(hits[0].object);
+    return this.substations.find((s) => s.group === root) ?? null;
   }
 
   /** Base tower cost gains mild linear growth per already-placed tower, on top of the
@@ -231,16 +374,32 @@ export class Game {
     return Math.round(ECONOMY.towerCost * growth * this.grid.towerCostMultiplier(node.i, node.j));
   }
 
+  private computeSubstationCost(node: GridNode): number {
+    return Math.round(SUBSTATION.cost * this.grid.towerCostMultiplier(node.i, node.j));
+  }
+
+  /** Plain click previews/places a Tower; `Shift`+click previews/places a Substation —
+   * the modifier plays the same "heavier, rarer action" role `Shift+R` already does for
+   * reset, so the common case (plain click) stays exactly as simple as before. */
   private onPointerMove = (e: MouseEvent): void => {
     this.updateNdc(e);
     const node = this.raycastGroundNode();
     if (node && this.grid.isBuildable(node.i, node.j)) {
       this.ghostBasePos.copy(node.world);
-      this.ghost.visible = true;
-      const cost = this.computeTowerCost(node);
-      this.ghostMaterial.opacity = this.economy.canAfford(cost, 0) ? 0.35 : 0.15;
+      if (e.shiftKey) {
+        this.ghost.visible = false;
+        this.substationGhost.visible = true;
+        const cost = this.computeSubstationCost(node);
+        this.substationGhostMaterial.opacity = this.economy.canAfford(cost, 0) ? 0.35 : 0.15;
+      } else {
+        this.substationGhost.visible = false;
+        this.ghost.visible = true;
+        const cost = this.computeTowerCost(node);
+        this.ghostMaterial.opacity = this.economy.canAfford(cost, 0) ? 0.35 : 0.15;
+      }
     } else {
       this.ghost.visible = false;
+      this.substationGhost.visible = false;
     }
   };
 
@@ -253,25 +412,47 @@ export class Game {
       return;
     }
 
-    const spanRecord = this.raycastSpan();
-    if (spanRecord) {
-      if (spanRecord.span.isFaulted()) this.tryRepairSpan(spanRecord);
-      else if (spanRecord.span.isEnergized()) this.tryUpgradeSpanThroughput(spanRecord);
+    const spanHit = this.raycastSpan();
+    if (spanHit) {
+      if (spanHit.span.isFaulted()) this.tryRepairSpan(spanHit.span, spanHit.endpoints);
+      else if (spanHit.span.isEnergized()) this.tryUpgradeSpanThroughput(spanHit.span, spanHit.endpoints);
+      return;
+    }
+
+    const plant = this.raycastPlant();
+    if (plant) {
+      this.handlePlantClick(plant);
+      return;
+    }
+
+    const neighborhood = this.raycastNeighborhood();
+    if (neighborhood) {
+      this.handleNeighborhoodClick(neighborhood);
+      return;
+    }
+
+    const substation = this.raycastSubstation();
+    if (substation) {
+      this.handleSubstationClick(substation);
       return;
     }
 
     const node = this.raycastGroundNode();
     if (node && this.grid.isBuildable(node.i, node.j)) {
-      const cost = this.computeTowerCost(node);
-      if (this.economy.canAfford(cost, 0)) {
-        this.economy.spend(cost, 0);
-        this.placeTower(node);
-        this.sound.playPlace();
-        this.spawnBurst(node.world.clone().setY(0.3), 'dust', performance.now());
-        this.save();
+      if (e.shiftKey) {
+        this.tryPlaceSubstation(node);
       } else {
-        this.ghostDenyStart = performance.now();
-        this.sound.playDeny();
+        const cost = this.computeTowerCost(node);
+        if (this.economy.canAfford(cost, 0)) {
+          this.economy.spend(cost, 0);
+          this.placeTower(node);
+          this.sound.playPlace();
+          this.spawnBurst(node.world.clone().setY(0.3), 'dust', performance.now());
+          this.save();
+        } else {
+          this.ghostDenyStart = performance.now();
+          this.sound.playDeny();
+        }
       }
       return;
     }
@@ -351,6 +532,128 @@ export class Game {
     return tower;
   }
 
+  /** Shift-click on buildable ground places a Substation instead of a Tower — see
+   * `onPointerMove`'s comment for why Shift is the chosen modifier. */
+  private tryPlaceSubstation(node: GridNode): void {
+    const cost = this.computeSubstationCost(node);
+    if (!this.economy.canAfford(cost, 0)) {
+      this.ghostDenyStart = performance.now();
+      this.sound.playDeny();
+      return;
+    }
+    this.economy.spend(cost, 0);
+    this.grid.setOccupied(node.i, node.j);
+    const substation = new Substation(node.i, node.j, node.world, PERMIT.pendingDurationSec * 1000);
+    this.substations.push(substation);
+    this.scene.add(substation.group);
+    this.sound.playPlace();
+    this.spawnBurst(node.world.clone().setY(0.3), 'dust', performance.now());
+    this.save();
+  }
+
+  /** Deterministic search for the nearest flat, buildable, unoccupied node to a target —
+   * used to place the Wave 1 hardcoded Plant/Neighborhood pair without risking a spawn on
+   * water/rough terrain or atop an already-loaded tower/substation. No randomness, so the
+   * same save always resolves to the same spawn point (matching the terrain's own
+   * "no seed, deterministic" discipline). */
+  private findBuildableNear(targetI: number, targetJ: number): GridNode {
+    for (let r = 0; r <= GRID.cells; r++) {
+      for (let di = -r; di <= r; di++) {
+        for (let dj = -r; dj <= r; dj++) {
+          if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
+          const i = targetI + di;
+          const j = targetJ + dj;
+          if (!isValidGridNode(i, j)) continue;
+          if (this.grid.terrainAt(i, j) !== 'flat') continue;
+          if (this.grid.isOccupied(i, j)) continue;
+          return { i, j, world: this.grid.nodeToWorld(i, j) };
+        }
+      }
+    }
+    return { i: targetI, j: targetJ, world: this.grid.nodeToWorld(targetI, targetJ) };
+  }
+
+  /** Creates a new Plant+Neighborhood pair plus the `Objective` record wrapping them —
+   * the one place both the initial spawn and every later respawn build a real, playable
+   * milestone, so the two call sites below can't drift apart. */
+  private createObjective(
+    plantNode: GridNode,
+    neighborhoodNode: GridNode,
+    fuelType: FuelType,
+    targetDemandMW: number,
+  ): void {
+    this.grid.setOccupied(plantNode.i, plantNode.j);
+    const plant = new PowerPlant(plantNode.i, plantNode.j, plantNode.world, fuelType);
+    this.plants.push(plant);
+    this.scene.add(plant.group);
+
+    this.grid.setOccupied(neighborhoodNode.i, neighborhoodNode.j);
+    const neighborhood = new Neighborhood(neighborhoodNode.i, neighborhoodNode.j, neighborhoodNode.world);
+    this.neighborhoods.push(neighborhood);
+    this.scene.add(neighborhood.group);
+
+    this.objectives.push({
+      id: `objective-${this.objectives.length}-${plant.id}`,
+      plant,
+      neighborhood,
+      targetDemandMW,
+      completedAt: null,
+    });
+  }
+
+  /** One hardcoded Plant+Neighborhood pair, spawned at deterministic, well-separated
+   * corners of the board — only on a truly fresh game. Once transmission/distribution
+   * links can reference a Plant/Neighborhood by identity (Wave 2), a fresh respawn every
+   * load is no longer safe (a link's persisted `[i,j]`/id could point at nothing, or the
+   * wrong thing) — `loadSavedGame()` restores a persisted pair instead, and this only
+   * runs when nothing was loaded (`this.plants.length === 0`). Must run after
+   * `loadSavedGame()` regardless, so the search correctly avoids cells an existing save
+   * already occupies. */
+  private spawnObjectiveEntities(): void {
+    if (this.plants.length > 0 || this.neighborhoods.length > 0) return;
+    const plantNode = this.findBuildableNear(4, 4);
+    const neighborhoodNode = this.findBuildableNear(16, 16);
+    this.createObjective(plantNode, neighborhoodNode, 'gas', NEIGHBORHOOD.startingDemandMW);
+  }
+
+  /** A new objective after the previous one completes — a fresh location (not the fixed
+   * starting corners) and a semi-random fuel type. Target stays at
+   * `NEIGHBORHOOD.startingDemandMW` for now: Wave 6 deliberately keeps it static and
+   * achievable without demand growth existing yet (Wave 7 is what makes a *later*
+   * target meaningfully higher than the last, synchronized with how much growth
+   * actually moves demand — escalating it here first would make every objective after
+   * the first unwinnable). */
+  private spawnNextObjective(): void {
+    const plantI = Math.floor(Math.random() * (GRID.cells + 1));
+    const plantJ = Math.floor(Math.random() * (GRID.cells + 1));
+    const neighborhoodI = GRID.cells - plantI;
+    const neighborhoodJ = GRID.cells - plantJ;
+
+    const plantNode = this.findBuildableNear(plantI, plantJ);
+    const neighborhoodNode = this.findBuildableNear(neighborhoodI, neighborhoodJ);
+    this.createObjective(plantNode, neighborhoodNode, pickRandomFuelType(), NEIGHBORHOOD.startingDemandMW);
+  }
+
+  /** Checked from `save()`, right after `recomputeNetworkState()` so served/redundant
+   * state is fresh. Completion requires all three: the Neighborhood's live demand has
+   * reached the fixed target, it's currently served, and currently redundant (decisions
+   * #1 and #6) — a one-shot celebration fires exactly once per objective (guarded by
+   * `completedAt !== null` skipping already-completed ones), then the next pair spawns
+   * after a breathing-room delay. */
+  private checkObjectiveCompletions(): void {
+    const now = performance.now();
+    for (const objective of this.objectives) {
+      if (objective.completedAt !== null) continue;
+      const { neighborhood, targetDemandMW } = objective;
+      if (neighborhood.currentDemandMW() >= targetDemandMW && neighborhood.isServed() && neighborhood.isRedundant()) {
+        objective.completedAt = now;
+        this.sound.playMilestoneComplete();
+        this.spawnBurst(neighborhood.attachPos.clone().setY(0.5), 'celebrate', now);
+        this.nextObjectiveSpawnAt = now + OBJECTIVE.respawnDelaySec * 1000;
+      }
+    }
+  }
+
   private handleTowerClick(tower: Tower): void {
     if (tower.isPending()) {
       tower.denyFeedback();
@@ -363,7 +666,22 @@ export class Game {
       return;
     }
 
+    // A Substation or Plant selected from a *different* click is a pending transmission
+    // link partner — checked before the Tower-Tower flow below, which stays completely
+    // untouched (same `tryStringSpan` call it always used).
+    if (this.selectedSubstation) {
+      if (this.tryLinkTransmission(this.selectedSubstation, tower)) this.save();
+      this.deselect();
+      return;
+    }
+    if (this.selectedPlant) {
+      if (this.tryLinkTransmission(this.selectedPlant, tower)) this.save();
+      this.deselect();
+      return;
+    }
+
     if (!this.selectedTower) {
+      this.deselect();
       this.selectedTower = tower;
       tower.setSelected(true);
       this.sound.playSelect();
@@ -377,14 +695,86 @@ export class Game {
     }
   }
 
+  private handleSubstationClick(substation: Substation): void {
+    if (substation.isPending()) {
+      substation.denyFeedback();
+      this.sound.playDeny();
+      return;
+    }
+
+    if (this.selectedSubstation === substation) {
+      this.deselect();
+      return;
+    }
+
+    if (this.selectedTower) {
+      if (this.tryLinkTransmission(this.selectedTower, substation)) this.save();
+      this.deselect();
+      return;
+    }
+    if (this.selectedPlant) {
+      if (this.tryLinkTransmission(this.selectedPlant, substation)) this.save();
+      this.deselect();
+      return;
+    }
+
+    this.deselect();
+    this.selectedSubstation = substation;
+    substation.setSelected(true);
+    this.sound.playSelect();
+  }
+
+  private handlePlantClick(plant: PowerPlant): void {
+    if (this.selectedPlant === plant) {
+      this.deselect();
+      return;
+    }
+
+    if (this.selectedTower) {
+      if (this.tryLinkTransmission(this.selectedTower, plant)) this.save();
+      this.deselect();
+      return;
+    }
+    if (this.selectedSubstation) {
+      if (this.tryLinkTransmission(this.selectedSubstation, plant)) this.save();
+      this.deselect();
+      return;
+    }
+
+    this.deselect();
+    this.selectedPlant = plant;
+    plant.setSelected(true);
+    this.sound.playSelect();
+  }
+
+  private handleNeighborhoodClick(neighborhood: Neighborhood): void {
+    // A selected Substation targeting an unconnected Neighborhood strings a
+    // distribution span — the one new click-flow Wave 2 actually adds, per PLAN.md.
+    if (this.selectedSubstation) {
+      if (this.tryStringDistributionSpan(this.selectedSubstation, neighborhood)) this.save();
+      this.deselect();
+      return;
+    }
+
+    const wasSelected = this.selectedNeighborhood === neighborhood;
+    this.deselect();
+    if (!wasSelected) {
+      this.selectedNeighborhood = neighborhood;
+      neighborhood.setSelected(true);
+      this.sound.playSelect();
+    }
+  }
+
   /** Stringing a span across rough terrain costs more Crew-Hours, not just more for raw
    * distance — mirrors `Grid.towerCostMultiplier`'s hill/marsh treatment but with its
    * own (smaller) multipliers since this scales a variable, distance-based Crew-Hours
    * cost rather than a flat one-time CapEx cost. Takes the higher of the two endpoints'
-   * multipliers, not stacked — a span is as hard to string as its harder end. */
-  private spanTerrainMultiplier(a: Tower, b: Tower): number {
-    const factor = (tower: Tower): number => {
-      const terrain = this.grid.terrainAt(tower.gridI, tower.gridJ);
+   * multipliers, not stacked — a span is as hard to string as its harder end. Widened to
+   * `TxNode` (was `Tower`) in Wave 2 so `tryLinkTransmission` can reuse it unchanged —
+   * every `TxNode` already exposes `gridI`/`gridJ`. */
+  private spanTerrainMultiplier(a: TxNode, b: TxNode): number {
+    const factor = (node: TxNode): number => {
+      const terrain = this.grid.terrainAt(node.gridI, node.gridJ);
       if (terrain === 'marsh') return ECONOMY.spanMarshMultiplier;
       if (terrain === 'hill') return ECONOMY.spanHillMultiplier;
       return 1;
@@ -433,60 +823,163 @@ export class Game {
     return true;
   }
 
-  private tryRepairSpan(record: SpanRecord): void {
+  /** Same cost-gating shape as `tryStringSpan`, generalized to accept a Substation or
+   * PowerPlant on either side — links a Tower/Substation/Plant into the wider
+   * transmission network. Kept as a separate method (rather than widening
+   * `tryStringSpan`'s signature) so the original, heavily-verified Tower-Tower path
+   * above stays byte-for-byte unchanged. */
+  private tryLinkTransmission(a: TxNode, b: TxNode): boolean {
+    const key = [a.gridI, a.gridJ, b.gridI, b.gridJ].sort().join('|');
+    if (this.spannedPairs.has(key)) {
+      a.denyFeedback();
+      b.denyFeedback();
+      this.sound.playDeny();
+      return false;
+    }
+
+    if (!a.hasFreeCapacity()) {
+      a.denyFeedback();
+      this.sound.playDeny();
+      return false;
+    }
+    if (!b.hasFreeCapacity()) {
+      b.denyFeedback();
+      this.sound.playDeny();
+      return false;
+    }
+
+    const distance = a.topPos.distanceTo(b.topPos);
+    const crewCost =
+      (ECONOMY.spanCostBase + distance * ECONOMY.spanCostPerUnitDistance) * this.spanTerrainMultiplier(a, b);
+    if (!this.economy.canAfford(0, crewCost)) {
+      a.denyFeedback();
+      b.denyFeedback();
+      this.sound.playDeny();
+      return false;
+    }
+
+    this.spannedPairs.add(key);
+    this.economy.spend(0, crewCost);
+    a.addConnection();
+    b.addConnection();
+
+    const span = new Span(a.topPos, b.topPos);
+    this.transmissionLinks.push({ span, a, b });
+    this.scene.add(span.group);
+    return true;
+  }
+
+  /** The one genuinely new click-flow Wave 2 adds: select a Substation, click an
+   * unconnected Neighborhood. At most one distribution span per Neighborhood (the
+   * plan's topology decision) — enforced via `connectedNeighborhoods`, mirroring
+   * `spannedPairs`'s role for transmission links. */
+  private tryStringDistributionSpan(substation: Substation, neighborhood: Neighborhood): boolean {
+    if (this.connectedNeighborhoods.has(neighborhood.id)) {
+      substation.denyFeedback();
+      neighborhood.denyFeedback();
+      this.sound.playDeny();
+      return false;
+    }
+    if (!substation.hasFreeCapacity()) {
+      substation.denyFeedback();
+      this.sound.playDeny();
+      return false;
+    }
+
+    const distance = substation.distPos.distanceTo(neighborhood.attachPos);
+    const crewCost = SUBSTATION.distributionSpanCostBase + distance * SUBSTATION.distributionSpanCostPerUnitDistance;
+    if (!this.economy.canAfford(0, crewCost)) {
+      substation.denyFeedback();
+      neighborhood.denyFeedback();
+      this.sound.playDeny();
+      return false;
+    }
+
+    this.connectedNeighborhoods.add(neighborhood.id);
+    this.economy.spend(0, crewCost);
+    substation.addConnection();
+
+    const span = new Span(substation.distPos, neighborhood.attachPos, 'distribution');
+    this.distributionSpans.push({ span, substation, neighborhood });
+    this.scene.add(span.group);
+    return true;
+  }
+
+  /** `endpoints` generalizes over `SpanRecord`'s `{a, b}` (both Tower),
+   * `TransmissionLinkRecord`'s `{a, b}` (both `TxNode`), and `DistributionSpanRecord`'s
+   * `{substation, neighborhood}` — every endpoint kind already implements
+   * `denyFeedback()`, so this works unchanged across all three span sources. */
+  private tryRepairSpan(span: Span, endpoints: DenyableEndpoint[]): void {
     const cost = STORM.repairCost;
     if (!this.economy.canAfford(cost.capEx, cost.crewHours)) {
-      record.a.denyFeedback();
-      record.b.denyFeedback();
+      endpoints.forEach((e) => e.denyFeedback());
       this.sound.playDeny();
       return;
     }
     this.economy.spend(cost.capEx, cost.crewHours);
-    record.span.repair();
+    span.repair();
     this.save();
   }
 
   /** Clicking a healthy (energized, non-faulted) line tries to upgrade its throughput
    * tier — same directness as clicking a faulted one to repair, no separate select
-   * step. Denies (shaking the two endpoint towers, same as every other span-level
-   * deny) at max tier or if unaffordable. */
-  private tryUpgradeSpanThroughput(record: SpanRecord): void {
-    if (!record.span.canUpgradeThroughput()) {
-      record.a.denyFeedback();
-      record.b.denyFeedback();
+   * step. Denies (shaking every endpoint, same as every other span-level deny) at max
+   * tier or if unaffordable. */
+  private tryUpgradeSpanThroughput(span: Span, endpoints: DenyableEndpoint[]): void {
+    if (!span.canUpgradeThroughput()) {
+      endpoints.forEach((e) => e.denyFeedback());
       this.sound.playDeny();
       return;
     }
-    const cost = ECONOMY.spanThroughputCost[record.span.getThroughputTier() - 1];
+    const cost = ECONOMY.spanThroughputCost[span.getThroughputTier() - 1];
     if (!this.economy.canAfford(cost.capEx, cost.crewHours)) {
-      record.a.denyFeedback();
-      record.b.denyFeedback();
+      endpoints.forEach((e) => e.denyFeedback());
       this.sound.playDeny();
       return;
     }
     this.economy.spend(cost.capEx, cost.crewHours);
-    record.span.upgradeThroughput();
-    this.sound.playUpgrade(record.span.getThroughputTier());
+    span.upgradeThroughput();
+    this.sound.playUpgrade(span.getThroughputTier());
     this.save();
+  }
+
+  /** All energized spans across all three arrays are storm-strike candidates — expanded
+   * in Wave 5 from the original Tower-Tower-only pool, since a blackout can only ever
+   * happen as a consequence of a storm actually being able to reach a transmission link
+   * or distribution span. `a`/`b` only need `gridI`/`gridJ` (terrain weighting) and an
+   * optional Tower-specific resilience check below — every endpoint kind here already
+   * has the former, `instanceof Tower` handles the latter. */
+  private stormCandidates(): { span: Span; a: TxNode | Neighborhood; b: TxNode | Neighborhood }[] {
+    return [
+      ...this.spans.filter(({ span }) => span.isEnergized()).map(({ span, a, b }) => ({ span, a, b })),
+      ...this.transmissionLinks.filter(({ span }) => span.isEnergized()).map(({ span, a, b }) => ({ span, a, b })),
+      ...this.distributionSpans
+        .filter(({ span }) => span.isEnergized())
+        .map(({ span, substation, neighborhood }) => ({ span, a: substation, b: neighborhood })),
+    ];
   }
 
   /** A span with at least one endpoint on marsh (wet/unstable ground) is more likely to
    * be picked as a storm's target — terrain-weighted, not uniform. A span with at least
-   * one Resilience-branch tier-3 endpoint is less likely, applied multiplicatively on
-   * top (a resilient tower on marsh is safer than average, not immune). */
-  private spanStormWeight(record: SpanRecord): number {
-    const aMarsh = this.grid.terrainAt(record.a.gridI, record.a.gridJ) === 'marsh';
-    const bMarsh = this.grid.terrainAt(record.b.gridI, record.b.gridJ) === 'marsh';
+   * one Resilience-branch tier-3 Tower endpoint is less likely, applied multiplicatively
+   * on top (a resilient tower on marsh is safer than average, not immune). */
+  private spanStormWeight(candidate: { a: TxNode | Neighborhood; b: TxNode | Neighborhood }): number {
+    const aMarsh = this.grid.terrainAt(candidate.a.gridI, candidate.a.gridJ) === 'marsh';
+    const bMarsh = this.grid.terrainAt(candidate.b.gridI, candidate.b.gridJ) === 'marsh';
     let weight = aMarsh || bMarsh ? STORM.marshWeightMultiplier : 1;
 
-    const aResilient = record.a.getTier() === 3 && record.a.getBranch() === 'resilience';
-    const bResilient = record.b.getTier() === 3 && record.b.getBranch() === 'resilience';
-    if (aResilient || bResilient) weight *= STORM.resilienceWeightMultiplier;
+    const isResilientTower = (node: TxNode | Neighborhood): boolean =>
+      node instanceof Tower && node.getTier() === 3 && node.getBranch() === 'resilience';
+    if (isResilientTower(candidate.a) || isResilientTower(candidate.b)) {
+      weight *= STORM.resilienceWeightMultiplier;
+    }
 
     return weight;
   }
 
-  private pickWeightedStormTarget(candidates: SpanRecord[]): SpanRecord {
+  private pickWeightedStormTarget<T extends { a: TxNode | Neighborhood; b: TxNode | Neighborhood }>(
+    candidates: T[],
+  ): T {
     const weights = candidates.map((c) => this.spanStormWeight(c));
     const total = weights.reduce((sum, w) => sum + w, 0);
     let roll = Math.random() * total;
@@ -498,7 +991,7 @@ export class Game {
   }
 
   private triggerStorm(now: number): void {
-    const candidates = this.spans.filter(({ span }) => span.isEnergized());
+    const candidates = this.stormCandidates();
     if (candidates.length >= STORM.minEnergizedSpansToStrike) {
       const target = this.pickWeightedStormTarget(candidates);
       target.span.fault();
@@ -528,6 +1021,18 @@ export class Game {
     if (this.selectedTower) {
       this.selectedTower.setSelected(false);
       this.selectedTower = null;
+    }
+    if (this.selectedSubstation) {
+      this.selectedSubstation.setSelected(false);
+      this.selectedSubstation = null;
+    }
+    if (this.selectedPlant) {
+      this.selectedPlant.setSelected(false);
+      this.selectedPlant = null;
+    }
+    if (this.selectedNeighborhood) {
+      this.selectedNeighborhood.setSelected(false);
+      this.selectedNeighborhood = null;
     }
   }
 
@@ -617,13 +1122,20 @@ export class Game {
     }
   }
 
+  /** Both ghosts share one base position and one deny-shake timer — only one is ever
+   * visible at a time (toggled in `onPointerMove` by Shift state), so applying the same
+   * shake to both is harmless and avoids needing a second deny-timer field. */
   private updateGhost(now: number): void {
-    this.ghost.position.copy(this.ghostBasePos);
+    let shakeX = 0;
     if (this.ghostDenyStart !== null) {
       const elapsed = now - this.ghostDenyStart;
-      this.ghost.position.x += denyShakeOffset(elapsed);
+      shakeX = denyShakeOffset(elapsed);
       if (elapsed >= DENY_SHAKE_DURATION_MS) this.ghostDenyStart = null;
     }
+    this.ghost.position.copy(this.ghostBasePos);
+    this.ghost.position.x += shakeX;
+    this.substationGhost.position.copy(this.ghostBasePos);
+    this.substationGhost.position.x += shakeX;
   }
 
   /** Derived from current state, not stored — once you place two towers or string a
@@ -653,8 +1165,20 @@ export class Game {
         const branchLabel = tower.getBranch() === 'resilience' ? 'RESILIENCE' : 'CAPACITY';
         context = `TOWER T3 ${branchLabel} SELECTED · MAX TIER`;
       }
+    } else if (this.selectedSubstation) {
+      context = 'SUBSTATION SELECTED · CLICK A TOWER/PLANT TO LINK, OR A NEIGHBORHOOD TO CONNECT DISTRIBUTION';
+    } else if (this.selectedPlant) {
+      const plant = this.selectedPlant;
+      context =
+        `PLANT (${plant.fuelType.toUpperCase()}) SELECTED · ${Math.round(plant.nameplateCapacityMW)} MW NAMEPLATE` +
+        ` · ${Math.round(plant.effectiveCapacityMW())} MW EFFECTIVE · CLICK A TOWER/SUBSTATION TO LINK`;
+    } else if (this.selectedNeighborhood) {
+      context = `NEIGHBORHOOD SELECTED · ${Math.round(this.selectedNeighborhood.currentDemandMW())} MW DEMAND`;
     }
-    const faultCount = this.spans.reduce((count, { span }) => count + (span.isFaulted() ? 1 : 0), 0);
+    const faultCount =
+      this.spans.reduce((count, { span }) => count + (span.isFaulted() ? 1 : 0), 0) +
+      this.transmissionLinks.reduce((count, { span }) => count + (span.isFaulted() ? 1 : 0), 0) +
+      this.distributionSpans.reduce((count, { span }) => count + (span.isFaulted() ? 1 : 0), 0);
     this.hud.update({
       capEx: this.economy.capEx,
       crewHours: this.economy.crewHours,
@@ -665,11 +1189,132 @@ export class Game {
       repairCrewHours: STORM.repairCost.crewHours,
       hint: this.computeOnboardingHint(),
       stormWarning: this.stormWarningActive,
+      blackoutCount: this.neighborhoods.reduce((count, n) => count + (n.isBlackedOut() ? 1 : 0), 0),
+      capacityWarningCount: this.neighborhoods.reduce((count, n) => count + (n.isCapacityWarningActive() ? 1 : 0), 0),
+      objectiveStatus: this.computeObjectiveStatus(),
+      completedObjectives: this.objectives.reduce((count, o) => count + (o.completedAt !== null ? 1 : 0), 0),
     });
+  }
+
+  /** The active objective's live status line — blank during the brief respawn gap right
+   * after a completion, matching the existing "blank when not applicable" HUD note
+   * pattern (fault/warning lines work the same way). */
+  private computeObjectiveStatus(): string {
+    const active = this.objectives.find((o) => o.completedAt === null);
+    if (!active) return '';
+    const { neighborhood, targetDemandMW } = active;
+    const parts = [`MILESTONE · ${Math.round(neighborhood.currentDemandMW())}/${Math.round(targetDemandMW)} MW`];
+    if (neighborhood.isBlackedOut()) parts.push('BLACKED OUT');
+    else if (!neighborhood.isServed()) parts.push('NOT SERVED');
+    else if (!neighborhood.isRedundant()) parts.push('SERVED · NEEDS REDUNDANCY TO COMPLETE');
+    else parts.push('SERVED · REDUNDANT');
+    return parts.join(' · ');
+  }
+
+  /** A stable id per transmission-capable node, synthesized from grid coordinates for
+   * Tower/Substation (which have no persistent `id` field of their own — Wave 3 doesn't
+   * otherwise need one) and reusing Plant's existing `id` directly. */
+  private txNodeId(node: TxNode): string {
+    if (node instanceof PowerPlant) return node.id;
+    return `${node instanceof Substation ? 'substation' : 'tower'}-${node.gridI}-${node.gridJ}`;
+  }
+
+  /** Translates the live scene entities into the plain, scene-independent graph shape
+   * `network.ts`'s pure functions read — the only place that crosses that boundary.
+   * Only energized, non-faulted spans become edges (`Span.isEnergized()` is already
+   * exactly "energized and not faulted"). */
+  private buildNetworkGraph(): NetworkGraph {
+    const nodes: GraphNode[] = [
+      ...this.plants.map((p): GraphNode => ({ id: p.id, kind: 'plant', capacityMW: p.effectiveCapacityMW() })),
+      ...this.towers.map((t): GraphNode => ({ id: this.txNodeId(t), kind: 'tower', capacityMW: Infinity })),
+      ...this.substations.map((s): GraphNode => ({
+        id: this.txNodeId(s),
+        kind: 'substation',
+        capacityMW: SUBSTATION.capacityMW,
+      })),
+      ...this.neighborhoods.map((n): GraphNode => ({ id: n.id, kind: 'neighborhood', capacityMW: Infinity })),
+    ];
+
+    const edges: GraphEdge[] = [];
+    const capacityForTier = (tier: number): number => ECONOMY.spanCapacityMW[tier - 1];
+    for (const { a, b, span } of this.spans) {
+      if (!span.isEnergized()) continue;
+      edges.push({
+        a: this.txNodeId(a),
+        b: this.txNodeId(b),
+        kind: 'transmission',
+        capacityMW: capacityForTier(span.getThroughputTier()),
+      });
+    }
+    for (const { a, b, span } of this.transmissionLinks) {
+      if (!span.isEnergized()) continue;
+      edges.push({
+        a: this.txNodeId(a),
+        b: this.txNodeId(b),
+        kind: 'transmission',
+        capacityMW: capacityForTier(span.getThroughputTier()),
+      });
+    }
+    for (const { substation, neighborhood, span } of this.distributionSpans) {
+      if (!span.isEnergized()) continue;
+      edges.push({
+        a: this.txNodeId(substation),
+        b: neighborhood.id,
+        kind: 'distribution',
+        capacityMW: capacityForTier(span.getThroughputTier()),
+      });
+    }
+
+    return { nodes, edges };
+  }
+
+  /** Recomputes demand-met and N-1 redundancy for every Neighborhood — cheap at this
+   * entity count, so it's fine to call on every discrete board-changing action rather
+   * than maintaining a dirty flag (see PLAN.md's Wave 3 section). No visual/economy
+   * consequence yet; purely internal state (`Neighborhood.setNetworkState`) that later
+   * waves (revenue, blackout, milestones) will read. */
+  private recomputeNetworkState(): void {
+    const graph = this.buildNetworkGraph();
+    const bottleneck = computeMaxBottleneck(
+      graph,
+      this.plants.map((p) => p.id),
+    );
+
+    // N-1 redundancy is computed once per Substation and shared by every Neighborhood
+    // hanging off it — cacheable since it depends only on the Substation's own upstream
+    // transmission topology, not which Neighborhood is asking (PLAN.md's topology note).
+    const redundancyCache = new Map<string, boolean>();
+    const isRedundant = (substationNodeId: string): boolean => {
+      if (!redundancyCache.has(substationNodeId)) {
+        redundancyCache.set(substationNodeId, isSubstationRedundant(graph, substationNodeId));
+      }
+      return redundancyCache.get(substationNodeId)!;
+    };
+
+    for (const neighborhood of this.neighborhoods) {
+      const bottleneckMW = bottleneck.get(neighborhood.id) ?? 0;
+      const served = bottleneckMW >= neighborhood.currentDemandMW();
+
+      const distributionRecord = this.distributionSpans.find((d) => d.neighborhood === neighborhood);
+      const redundant = distributionRecord ? isRedundant(this.txNodeId(distributionRecord.substation)) : false;
+
+      // setNetworkState is purely derived — it never originates a blackout on its own,
+      // only classifies the consequence of whatever already changed the graph (almost
+      // always a storm fault, which has already played its own strike sound by the time
+      // this runs — no second sound here to avoid double-triggering audio for one
+      // event). No new strike mechanism, no new timer/probability surface — this is the
+      // invariant the softlock-prevention re-check below confirms stays intact.
+      const event = neighborhood.setNetworkState(served, redundant, bottleneckMW);
+      if (event === 'blackoutStarted') {
+        this.spawnBurst(neighborhood.attachPos.clone().setY(0.3), 'spark', performance.now());
+      }
+    }
   }
 
   private save = (): void => {
     if (this.isResetting) return;
+    this.recomputeNetworkState();
+    this.checkObjectiveCompletions();
     const camera = this.cameraRig.getView();
     saveGame({
       capEx: this.economy.capEx,
@@ -684,6 +1329,37 @@ export class Game {
       spans: this.spans.map(({ a, b, span }) => ({
         a: [a.gridI, a.gridJ] as [number, number],
         b: [b.gridI, b.gridJ] as [number, number],
+        faulted: span.isFaulted(),
+        throughputTier: span.getThroughputTier(),
+      })),
+      substations: this.substations.map((s) => ({
+        i: s.gridI,
+        j: s.gridJ,
+        pendingMs: s.getPendingRemainingMs() ?? undefined,
+      })),
+      plants: this.plants.map((p) => ({ id: p.id, i: p.gridI, j: p.gridJ, fuelType: p.fuelType })),
+      neighborhoods: this.neighborhoods.map((n) => ({
+        id: n.id,
+        i: n.gridI,
+        j: n.gridJ,
+        demandMW: n.currentDemandMW(),
+      })),
+      transmissionLinks: this.transmissionLinks.map(({ a, b, span }) => ({
+        a: [a.gridI, a.gridJ] as [number, number],
+        b: [b.gridI, b.gridJ] as [number, number],
+        faulted: span.isFaulted(),
+        throughputTier: span.getThroughputTier(),
+      })),
+      objectives: this.objectives.map((o) => ({
+        id: o.id,
+        plantId: o.plant.id,
+        neighborhoodId: o.neighborhood.id,
+        targetDemandMW: o.targetDemandMW,
+        completedAt: o.completedAt ?? undefined,
+      })),
+      distributionSpans: this.distributionSpans.map(({ substation, neighborhood, span }) => ({
+        substation: [substation.gridI, substation.gridJ] as [number, number],
+        neighborhoodId: neighborhood.id,
         faulted: span.isFaulted(),
         throughputTier: span.getThroughputTier(),
       })),
@@ -704,6 +1380,13 @@ export class Game {
       this.economy.restore(data.capEx, data.crewHours);
 
       const byKey = new Map<string, Tower>();
+      // Combined lookup across every transmission-capable node kind, keyed by grid
+      // coordinate — safe since no two entities ever share a cell (all placement paths
+      // check `grid.isOccupied`/call `grid.setOccupied`). Used by the
+      // `transmissionLinks` reconstruction loop below, which doesn't care which concrete
+      // type it finds at either end.
+      const txNodeByKey = new Map<string, TxNode>();
+
       for (const t of data.towers) {
         if (!isValidGridNode(t.i, t.j) || !Number.isFinite(t.tier)) continue;
         const tier = Math.min(Math.max(1, Math.round(t.tier)), ECONOMY.towerMaxTier);
@@ -718,6 +1401,70 @@ export class Game {
         this.towers.push(tower);
         this.scene.add(tower.group);
         byKey.set(`${t.i},${t.j}`, tower);
+        txNodeByKey.set(`${t.i},${t.j}`, tower);
+      }
+
+      for (const s of data.substations ?? []) {
+        if (!isValidGridNode(s.i, s.j)) continue;
+        const pendingMs = Number.isFinite(s.pendingMs) && s.pendingMs! > 0 ? s.pendingMs : undefined;
+        const world = this.grid.nodeToWorld(s.i, s.j);
+        this.grid.setOccupied(s.i, s.j);
+        const substation = new Substation(s.i, s.j, world);
+        substation.materializeFromSave(pendingMs);
+        this.substations.push(substation);
+        this.scene.add(substation.group);
+        txNodeByKey.set(`${s.i},${s.j}`, substation);
+      }
+
+      const FUEL_TYPES = ['coal', 'gas', 'nuclear', 'hydro', 'solar', 'wind'];
+      const plantById = new Map<string, PowerPlant>();
+      for (const p of data.plants ?? []) {
+        if (!isValidGridNode(p.i, p.j) || !FUEL_TYPES.includes(p.fuelType)) continue;
+        const world = this.grid.nodeToWorld(p.i, p.j);
+        this.grid.setOccupied(p.i, p.j);
+        const plant = new PowerPlant(p.i, p.j, world, p.fuelType as FuelType);
+        plant.materializeFromSave();
+        this.plants.push(plant);
+        this.scene.add(plant.group);
+        txNodeByKey.set(`${p.i},${p.j}`, plant);
+        plantById.set(plant.id, plant);
+      }
+
+      const neighborhoodById = new Map<string, Neighborhood>();
+      for (const n of data.neighborhoods ?? []) {
+        if (!isValidGridNode(n.i, n.j) || !Number.isFinite(n.demandMW)) continue;
+        const world = this.grid.nodeToWorld(n.i, n.j);
+        this.grid.setOccupied(n.i, n.j);
+        const neighborhood = new Neighborhood(n.i, n.j, world, n.demandMW);
+        neighborhood.materializeFromSave();
+        this.neighborhoods.push(neighborhood);
+        this.scene.add(neighborhood.group);
+        neighborhoodById.set(n.id, neighborhood);
+      }
+
+      for (const o of data.objectives ?? []) {
+        const plant = plantById.get(o.plantId);
+        const neighborhood = neighborhoodById.get(o.neighborhoodId);
+        if (!plant || !neighborhood || !Number.isFinite(o.targetDemandMW)) continue;
+        this.objectives.push({
+          id: o.id,
+          plant,
+          neighborhood,
+          targetDemandMW: o.targetDemandMW,
+          completedAt: Number.isFinite(o.completedAt) ? o.completedAt! : null,
+        });
+      }
+      // Backward-compat: a pre-Wave-6 save has Plant/Neighborhood (Wave 2+) but no
+      // `objectives` array at all — synthesize one wrapping the first pair rather than
+      // leaving an existing player's in-progress network with no objective to complete.
+      if (this.objectives.length === 0 && this.plants.length > 0 && this.neighborhoods.length > 0) {
+        this.objectives.push({
+          id: `objective-0-${this.plants[0].id}`,
+          plant: this.plants[0],
+          neighborhood: this.neighborhoods[0],
+          targetDemandMW: NEIGHBORHOOD.startingDemandMW,
+          completedAt: null,
+        });
       }
 
       for (const s of data.spans) {
@@ -737,6 +1484,39 @@ export class Game {
         this.spannedPairs.add([a.gridI, a.gridJ, b.gridI, b.gridJ].sort().join('|'));
       }
 
+      for (const link of data.transmissionLinks ?? []) {
+        const a = txNodeByKey.get(`${link.a[0]},${link.a[1]}`);
+        const b = txNodeByKey.get(`${link.b[0]},${link.b[1]}`);
+        if (!a || !b) continue;
+        const throughputTier = Number.isFinite(link.throughputTier)
+          ? Math.min(Math.max(1, Math.round(link.throughputTier!)), ECONOMY.spanThroughputMaxTier)
+          : 1;
+        a.addConnection();
+        b.addConnection();
+        const span = new Span(a.topPos, b.topPos);
+        span.materializeEnergized(throughputTier);
+        if (link.faulted) span.fault();
+        this.transmissionLinks.push({ span, a, b });
+        this.scene.add(span.group);
+        this.spannedPairs.add([a.gridI, a.gridJ, b.gridI, b.gridJ].sort().join('|'));
+      }
+
+      for (const d of data.distributionSpans ?? []) {
+        const substation = txNodeByKey.get(`${d.substation[0]},${d.substation[1]}`);
+        const neighborhood = neighborhoodById.get(d.neighborhoodId);
+        if (!(substation instanceof Substation) || !neighborhood) continue;
+        const throughputTier = Number.isFinite(d.throughputTier)
+          ? Math.min(Math.max(1, Math.round(d.throughputTier!)), ECONOMY.spanThroughputMaxTier)
+          : 1;
+        substation.addConnection();
+        const span = new Span(substation.distPos, neighborhood.attachPos, 'distribution');
+        span.materializeEnergized(throughputTier);
+        if (d.faulted) span.fault();
+        this.distributionSpans.push({ span, substation, neighborhood });
+        this.scene.add(span.group);
+        this.connectedNeighborhoods.add(neighborhood.id);
+      }
+
       if (data.camera) {
         this.cameraRig.setView(data.camera.x, data.camera.z, data.camera.zoom);
       }
@@ -744,6 +1524,16 @@ export class Game {
       // Corrupted/incompatible save data — discard and continue with whatever loaded so far.
       clearSave();
     }
+  }
+
+  /** Shared per-frame update for any span regardless of which of the three arrays it
+   * lives in — advances its phase animation, fires the matching sound on a phase
+   * transition, and reports its current income/fault contribution for the caller to sum. */
+  private tickSpan(span: Span, now: number): { income: number; faulted: boolean } {
+    const event = span.update(now);
+    if (event === 'energized') this.sound.playEnergize();
+    else if (event === 'repaired') this.sound.playRepair();
+    return { income: span.isEnergized() ? span.incomeRate() : 0, faulted: span.isFaulted() };
   }
 
   private tick = (): void => {
@@ -762,23 +1552,61 @@ export class Game {
       }
     }
 
+    for (const plant of this.plants) plant.update(now);
+    for (const neighborhood of this.neighborhoods) {
+      neighborhood.update(now, dt);
+      if (neighborhood.checkCapacityWarning(NEIGHBORHOOD.demandWarningLeadSec)) {
+        this.sound.playCapacityWarning();
+      }
+    }
+    for (const substation of this.substations) {
+      const event = substation.update(now);
+      if (event === 'permitCleared') {
+        this.sound.playPermitClear();
+        this.spawnBurst(new THREE.Vector3(substation.topPos.x, 0.3, substation.topPos.z), 'dust', now);
+      }
+    }
+
     let capExIncomeRate = 0;
     let faultCount = 0;
     for (const { span } of this.spans) {
-      const event = span.update(now);
-      if (event === 'energized') this.sound.playEnergize();
-      else if (event === 'repaired') this.sound.playRepair();
-      if (span.isEnergized()) {
-        capExIncomeRate += span.incomeRate();
-      }
-      if (span.isFaulted()) faultCount++;
+      const r = this.tickSpan(span, now);
+      capExIncomeRate += r.income;
+      if (r.faulted) faultCount++;
+    }
+    for (const { span } of this.transmissionLinks) {
+      const r = this.tickSpan(span, now);
+      capExIncomeRate += r.income;
+      if (r.faulted) faultCount++;
+    }
+    for (const { span } of this.distributionSpans) {
+      const r = this.tickSpan(span, now);
+      capExIncomeRate += r.income;
+      if (r.faulted) faultCount++;
     }
     this.sound.updateFaultAlarm(now, faultCount);
 
-    this.economy.tick(dt, capExIncomeRate);
+    // Demand-based income (Wave 4) — a fully independent second stream, additive on top
+    // of the legacy per-span rate above. A served Neighborhood pays full rate regardless
+    // of redundancy (that's a completion/blackout-risk concern, not a revenue one); a
+    // not-served Neighborhood contributes nothing (a cliff, not partial credit).
+    let objectiveIncomeRate = 0;
+    for (const neighborhood of this.neighborhoods) {
+      if (neighborhood.isServed()) {
+        objectiveIncomeRate += neighborhood.currentDemandMW() * OBJECTIVE.capExPerMWServedPerSec;
+      }
+    }
+
+    this.economy.tick(dt, capExIncomeRate + objectiveIncomeRate);
 
     this.updateStormWarning(now);
     if (now >= this.nextStormAt) this.triggerStorm(now);
+
+    if (this.nextObjectiveSpawnAt !== null && now >= this.nextObjectiveSpawnAt) {
+      this.nextObjectiveSpawnAt = null;
+      this.spawnNextObjective();
+      this.save();
+    }
 
     this.updateRain(now, dt);
     this.updateBursts(now);

@@ -22,8 +22,9 @@ function terrainNoise(i: number, j: number): number {
 }
 
 /** Deterministic pseudo-random in [0, 1) from integer coords + a seed, so patch jitter
- * needs no persistence either — it falls out of the same fixed math every time. */
-function hash01(i: number, j: number, seed: number): number {
+ * needs no persistence either — it falls out of the same fixed math every time. Exported
+ * for reuse by other deterministic-jitter needs (e.g. Neighborhood's house layout). */
+export function hash01(i: number, j: number, seed: number): number {
   const s = Math.sin(i * 127.1 + j * 311.7 + seed * 74.3) * 43758.5453;
   return s - Math.floor(s);
 }

@@ -1,6 +1,12 @@
 # Right of Way — Player Guide
 
-You're building a transmission grid. Place towers, string power lines between them, keep the network energized, and survive the storms that come for it. There are no menus — everything happens by clicking directly in the world.
+You're building a transmission grid — connecting real Power Plants to real
+Neighborhoods that need power, keeping the network energized and redundant, and
+surviving the storms that come for it. Place towers, string lines, build out
+substations and distribution feeders, and complete milestones as neighborhoods come
+online. There are no menus — everything happens by clicking directly in the world, and
+the free-build sandbox underneath it all is always there too: nothing stops you from
+just building for its own sake.
 
 ## Core loop
 
@@ -66,6 +72,55 @@ Towers aren't the only thing that upgrades — individual lines do too, independ
 - Each upgrade costs CapEx and Crew-Hours, and boosts how much CapEx that specific line earns per second from then on — a real investment decision, since the payoff is spread out over time rather than immediate.
 - A line's thickness always tells you its tier — a thick cable is genuinely carrying more capacity, not just decorated to look that way.
 
+## Plants, Substations & Neighborhoods
+
+The board now has two more kinds of structure alongside your towers:
+
+- **Power Plants** — fixed generation sources. Fuel type shows in the shape itself:
+  twin stacks for coal, one tall stack for gas, a cooling-tower silhouette for nuclear,
+  a dam for hydro, a tilted panel array for solar, turbines for wind. Click one to see
+  its nameplate and effective (capacity-factor-adjusted) MW.
+- **Neighborhoods** — small house clusters that need power delivered to them. Click one
+  to see its MW demand.
+- **Substations** — the voltage-transition point between your transmission network and a
+  neighborhood's local distribution. **`Shift` + click** buildable ground to place one
+  instead of a regular tower (same cost/terrain-gating and permit-pending wait as a
+  tower, just a distinct fenced-yard silhouette and a steeper price).
+
+Link a Plant, Tower, or Substation to another one by selecting one and clicking the
+other, exactly like stringing a tower-to-tower line. Select a Substation and click an
+unconnected Neighborhood to run its local distribution feeder — a visibly thinner,
+tauter line than your transmission spans (real utility poles, not lattice towers). Each
+Neighborhood ever gets one distribution feeder.
+
+**A fully connected Neighborhood earns real money.** Once a Plant-to-Neighborhood chain
+carries enough capacity to cover a Neighborhood's demand, it starts paying CapEx/sec on
+top of whatever your individual lines already earn — a completely separate income
+stream, not a replacement for it. A Neighborhood that can't currently get enough power
+earns nothing until you fix that.
+
+**Blackouts.** A Neighborhood with only one path back to a Plant is "at risk" — if a
+storm takes out that one path, the Neighborhood goes fully dark (a pulsing red glow
+across its whole cluster, worse than a single faulted line) and stops earning until you
+restore it. A second, independent path through a different Substation protects against
+this. Repairing the fault that caused it clears the blackout automatically.
+
+**Milestones.** Every Plant+Neighborhood pair is a real objective — a green status line
+under the top panel tracks it: how much of its target MW is currently served, and
+whether it's redundant yet. A milestone completes once the Neighborhood is fully served
+*and* has that second independent path (full N-1 redundancy) — served alone isn't
+enough. Completing one is a real event (a fanfare, a burst of light at the
+Neighborhood, and the MILESTONES counter in the top panel ticks up) and a fresh
+Plant+Neighborhood pair appears elsewhere a short while later, with a different fuel
+type. The game never ends — there's always another one coming.
+
+**Demand grows.** A Neighborhood's demand climbs slowly and continuously on its own,
+even after a milestone completes — a chain that comfortably serves it today can fall
+behind later if you never revisit it. A rising tone (distinct from the storm rumble)
+plus a steady HUD line warn you a Neighborhood is about to outgrow its current capacity,
+with enough lead time to upgrade a span's throughput or add another path before it
+actually stops being served.
+
 ## Camera
 
 - **Right-click and drag** to pan.
@@ -77,13 +132,17 @@ Towers aren't the only thing that upgrades — individual lines do too, independ
 - **`U`** — upgrade the selected tower (the Capacity branch, once at tier 2).
 - **`I`** — upgrade the selected tower via the Resilience branch (tier 2 only).
 - **`Q`** / **`E`** — rotate the camera 90° left/right.
+- **`Shift` + click** on buildable ground — place a Substation instead of a Tower.
 - **`Shift` + `R`** — **reset.** Wipes your save and starts a fresh game immediately. No confirmation, no undo.
 
 ## Reading the HUD
 
-- **Top-left panel** — CapEx and Crew-Hours, live.
-- **Red line (blinking)** — appears only when something's faulted, with a live fault count and repair cost.
+- **Top-left panel** — CapEx, Crew-Hours, and your completed milestone count, live.
+- **Green line** — the active milestone's status (MW served/target, served/redundant state). Blank for a short while right after a milestone completes, before the next one appears.
+- **Red line (blinking, blackout)** — appears only when a Neighborhood has gone dark. Restore its last path to clear it.
+- **Red line (blinking, fault)** — appears only when something's faulted, with a live fault count and repair cost.
 - **Red line (steady)** — a storm warning: weather's rolling in, a check is imminent. Not blinking, so you can always tell it apart from a real, active fault.
+- **Red line (steady, capacity)** — a Neighborhood is about to outgrow its current capacity. Upgrade a span or add another path before it stops being served.
 - **Orange line** — context for whatever's currently selected (a tower's tier, upgrade options and costs).
 - **Dim line** — an onboarding hint for your first few actions. It stops appearing once you've placed two towers and strung a line, and never comes back.
 

@@ -1,19 +1,10 @@
 import * as THREE from 'three';
 import { COLORS, DENY_SHAKE_DURATION_MS, ECONOMY } from './constants';
-import { denyShakeOffset } from './feedback';
+import { denyShakeOffset, easeOutBack } from './feedback';
+import { insulatorGeo } from './sharedGeometry';
 
 export type TowerEvent = 'permitCleared';
 export type TowerBranch = 'capacity' | 'resilience';
-
-function easeOutBack(x: number): number {
-  const c1 = 1.70158;
-  const c3 = c1 + 1;
-  return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
-}
-
-/** Shared insulator-string geometry — one instance reused by every arm on every tower
- * (including tier-upgrade arms added later), not recreated per tower. */
-const insulatorGeo = new THREE.CylinderGeometry(0.04, 0.06, 0.34, 5);
 
 /** Shared low-poly lattice-tower geometry, reused by real towers and the hover ghost. */
 export function buildTowerVisual(material: THREE.Material, height: number): THREE.Group {

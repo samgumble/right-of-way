@@ -281,6 +281,35 @@ export class SoundManager {
     });
   }
 
+  /** A rising tone before a Neighborhood's growing demand is projected to exceed its
+   * currently-served capacity — tonally distinct from `playStormWarning()`'s descending
+   * rumble (this means "a neighborhood needs upgrading," not "weather is coming"), so a
+   * player can tell them apart by ear alone. */
+  playCapacityWarning(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    this.tone({
+      freq: 340,
+      endFreq: 520,
+      type: 'sine',
+      start: now,
+      duration: 0.5,
+      peak: 0.2,
+      filterFreq: 1200,
+      filterEndFreq: 2000,
+    });
+    this.tone({
+      freq: 510,
+      endFreq: 780,
+      type: 'triangle',
+      start: now + 0.05,
+      duration: 0.45,
+      peak: 0.1,
+      filterFreq: 1800,
+    });
+  }
+
   playStormStrike(): void {
     const ctx = this.ctx;
     if (!ctx) return;
@@ -352,6 +381,31 @@ export class SoundManager {
     lfo.stop(start + duration);
     wind.stop(start + duration);
     rain.stop(start + duration);
+  }
+
+  /** A richer, longer fanfare than `playUpgrade`'s two-tone sweep — completing a
+   * milestone is a bigger deal than a routine upgrade. Three ascending notes (a major
+   * triad arpeggio, evoking a real "achievement" chime), each layered with a shimmer
+   * harmonic, plus a bright tail once the arpeggio lands. */
+  playMilestoneComplete(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const base = 440;
+    const notes = [base, base * 1.25, base * 1.5];
+    notes.forEach((freq, i) => {
+      const start = now + i * 0.12;
+      this.tone({ freq, type: 'sine', start, duration: 0.5, peak: 0.3, filterFreq: 3500 });
+      this.tone({ freq: freq * 2, type: 'triangle', start, duration: 0.4, peak: 0.12, filterFreq: 4500 });
+    });
+    this.tone({
+      freq: base * 2,
+      type: 'triangle',
+      start: now + notes.length * 0.12,
+      duration: 0.8,
+      peak: 0.15,
+      filterFreq: 5000,
+    });
   }
 
   /** Aggregate fault alarm — one shared periodic tick regardless of how many spans are

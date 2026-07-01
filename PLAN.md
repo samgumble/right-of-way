@@ -44,7 +44,7 @@ hand-written catenary function, not Rapier.
 | — | Player guide (in-game) + upgraded pole visuals (out-of-roadmap) | **Done** — see below |
 | — | More depth: span terrain cost, storm warning, line throughput (out-of-roadmap) | **Done** — see below |
 | — | Camera rotation hotkey (out-of-roadmap) | **Done** — see below |
-| — | Plant/Substation/Neighborhood redesign — real purpose/win condition (out-of-roadmap) | **In progress** — plan drafted, see "Up next" below |
+| — | Plant/Substation/Neighborhood redesign — real purpose/win condition (out-of-roadmap) | **Done** — all 8 waves, see below |
 | 6 | Stretch: procedural regions, rival AI utility | Not started (audio and upgrade branching were pulled into the 10x expansion; procedural regions/rival AI remain open stretch goals) |
 
 ## Phase 1 scope (delivered)
@@ -425,33 +425,305 @@ open, matching every other hotkey.
 
 ## Up next
 
-**A major redesign is now in progress**, prompted by the user asking for a real
-purpose/win-condition for the game — "realistic, industry-specific, and detailed,"
-citing "connecting a plant to a neighborhood" as the framing. Through two rounds of
-clarifying questions, the confirmed direction is: milestone objectives (discrete,
-completable goals, game continues after each); Power Plant and Neighborhood/Load-Center
-as new fixed-location anchor node types (not player-placed); a Substation as a new
-player-placed voltage-step-down node between them; full realism — N-1 redundancy
-(hard requirement, a real NERC-style standard), generation mix (multiple fuel types),
-demand growth over time; revenue tied to actually meeting neighborhood demand rather
-than the current flat/tiered per-span income; distinct distribution-pole visuals for the
-neighborhood-local leg vs. the existing lattice transmission towers; and the existing
-free-build sandbox stays exactly as it is, with objectives layered on top.
+**The plant/neighborhood/N-1 "real purpose" redesign is fully delivered — all 8 waves.**
+The game now has a real, industry-grounded win condition: connect a Power Plant to a
+Neighborhood through a real transmission/distribution network, hold N-1 redundancy, and
+a milestone completes — with a new one always waiting after. Final plan (synthesized
+from the background Plan agent's 969-line design) lives at
+`/Users/samgumble/.claude/plans/fancy-wandering-dawn.md`; the wave-by-wave delivery
+detail is below and in HANDOVER.md's matching "architecture additions" subsections.
 
-A Plan agent has completed a detailed technical design (network-capacity/N-1 algorithm,
-entity architecture, revenue model, staged wave breakdown) — see
-`/Users/samgumble/.claude/plans/fancy-wandering-dawn-agent-a8e9fa7bd67d6e453.md`. It
-flagged one real tension needing explicit confirmation before implementation starts:
-decision "revenue tied to demand met" conflicts with the just-shipped flat/tiered span
-income system, and recommends an additive/layered model (new demand-based income
-coexists with the existing span income for non-objective spans) rather than a full
-replacement — this and the agent's other open questions need review before work begins.
+Two real bugs were caught and fixed during this redesign's own required verification,
+not left for later: an N-1 redundancy edge case (Wave 3, see that section) and a
+markdown paragraph-merging gap in the guide renderer (Wave 8, below) — both found by
+following through on the plan's own "verify, don't assume" checkpoints.
 
-Once that redesign ships, the same "real playtest before adding more" recommendation
-from before still applies — a real, growing list of tuning constants (marsh thresholds,
-cost curve, storm weighting, branch costs, span/warning/throughput numbers) are verified
-*correct* but not yet validated as *fun*, and audio has never been heard by a human.
-Phase 6's original stretch goals (procedural regions, a rival AI utility) remain
-open-ended and not currently scoped. See HANDOVER.md's "Known gaps" section for the full
-list — it's getting long enough that a real playtest is the highest-leverage thing to do
-next, more than any single additional feature.
+The same "real playtest before adding more" recommendation from before still applies,
+now more than ever — this was a large body of new mechanical depth (network topology, a
+real graph algorithm, a second income stream, a blackout mechanic, a milestone
+lifecycle, continuous demand growth) shipped across one long session, each piece
+individually well-verified but never played as one continuous session by a human. A
+real, growing list of tuning constants (marsh thresholds, cost curve, storm weighting,
+branch costs, span/warning/throughput numbers, and now the entire `PLANT`/`SUBSTATION`/
+`NEIGHBORHOOD`/`OBJECTIVE` groups) are verified *correct* but not yet validated as *fun*,
+and audio has never been heard by a human. Phase 6's original stretch goals (procedural
+regions, a rival AI utility) remain open-ended and not currently scoped. See
+HANDOVER.md's "Known gaps" section for the full, honest list — it's substantial at this
+point, and a real playtest is unambiguously the highest-leverage next step, more than
+any single additional feature.
+
+## Plant/Neighborhood/Substation redesign — Wave 1 (delivered)
+
+New entities exist on the board and are fully click-selectable, but don't do anything
+functionally yet — that's later waves. See HANDOVER.md for full architecture.
+
+1. **`PowerPlant`** — one hardcoded gas plant spawns automatically each game (fixed,
+   deterministic location). Click to see fuel type, nameplate MW, and effective
+   (capacity-factor-adjusted) MW. Six fuel types exist in code (`coal`/`gas`/`nuclear`/
+   `hydro`/`solar`/`wind`), each with a distinct low-poly silhouette (geometry only, no
+   new colors) — only `gas` is spawned yet; the rest activate once objective spawning
+   (Wave 6) picks fuel types semi-randomly.
+2. **`Neighborhood`** — one hardcoded neighborhood (a jittered house cluster) spawns
+   opposite the plant. Click to see its MW demand. Fixed for now; grows over time
+   starting Wave 7.
+3. **`Substation`** — player-placed via **`Shift`+click** on buildable ground (same
+   cost/terrain-gating/permitting flow as a Tower, distinct fenced-yard silhouette, no
+   tier/branch upgrade system). Persisted like a Tower. Functionally inert until Wave 2
+   wires up the connect-to-Neighborhood action.
+
+Both `Plant`/`Neighborhood` spawn at deterministic board corners via a small outward
+search for the nearest flat, buildable, unoccupied node; `Substation` is fully persisted
+since it costs real CapEx.
+
+## Plant/Neighborhood/Substation redesign — Wave 2 (delivered)
+
+The plan's own Wave 2 scope (voltage tiers + the Substation→Neighborhood distribution
+connect action) turned out to need one necessary addition discovered during
+implementation: without a way to also link Towers/Plants to Substations on the
+transmission side, Substations would be permanently unreachable islands and the whole
+feature would be untestable — so general transmission-node linking (any pair of
+Tower/Substation/Plant, via the existing select-then-click flow) shipped as part of this
+wave too.
+
+1. **Voltage tiers.** `Span` gained a `voltageTier: 'transmission' | 'distribution'`
+   field (default `'transmission'`, zero behavior change for every existing/new plain
+   span). Distribution spans get a fixed, visibly-thinner base tube radius (0.045 vs.
+   transmission's 0.09 — not multiplier-scaled off the same base) and a tighter catenary
+   sag ratio (0.05 vs. 0.12) — verified exactly via direct tube-geometry inspection at
+   both throughput tiers.
+2. **Transmission-node linking.** Select a Tower, Substation, or Plant, then click
+   another one of any of those three kinds — strings a transmission span between them,
+   reusing `tryStringSpan`'s exact cost-gating shape via a new sibling method
+   (`tryLinkTransmission`), kept deliberately separate so the original, heavily-verified
+   Tower-Tower path is untouched. New `transmissionLinks` array (separate from the
+   original Tower-only `spans` array) holds these.
+3. **Distribution connect action.** Select a Substation, click an unconnected
+   Neighborhood — strings a distribution span (`tryStringDistributionSpan`), at most one
+   per Neighborhood. New `distributionSpans` array.
+4. **Persistence, expanded.** Since links can now reference a Plant/Neighborhood by
+   identity, Plant/Neighborhood are now persisted too (deferring this to Wave 6 as
+   originally sketched would have let a persisted link silently point at nothing, or the
+   wrong entity, after a reload). `transmissionLinks`/`distributionSpans` persist
+   additively, same as everything else — `SAVE_VERSION` stays at 1.
+5. **Storms deliberately don't reach the new span types yet** — `triggerStorm()` is
+   untouched, still Tower-Tower-only. Wiring storms (and eventually blackouts) into
+   transmission/distribution links is explicitly deferred to Wave 5, where it's in scope
+   and gets the softlock-invariant scrutiny that change deserves.
+
+Verified: real dispatched clicks (not just direct method calls) for both new link flows;
+tube radii confirmed exactly 0.09/0.045 (tier 1) and 0.135/0.06075 (tier 2, after a real
+click-driven throughput upgrade); a real click-driven repair on a faulted transmission
+link spent exactly `STORM.repairCost.capEx`; full persistence round-trip (all four new
+arrays); a legacy pre-Wave-2 save (only `towers`/`spans`/`substations`) loads with zero
+errors and correctly falls back to a fresh deterministic Plant/Neighborhood pair.
+
+## Plant/Neighborhood/Substation redesign — Wave 3 (delivered)
+
+The plan's one explicitly high-risk wave — the network capacity/N-1 algorithm. New
+`src/game/network.ts`: pure functions, no Three.js/scene dependency, matching
+`catenary.ts`'s precedent.
+
+1. **`computeMaxBottleneck(graph, sourceIds)`** — multi-source widest-path
+   (maximum-bottleneck-path) from every Plant simultaneously. A Neighborhood is *served*
+   iff its computed bottleneck ≥ its current demand.
+2. **`isSubstationRedundant(graph, substationId)`** — substation-disjoint two-path
+   search (two BFS passes, the second excluding both the substations *and the edges* the
+   first pass used). Computed once per Substation, shared by every Neighborhood hanging
+   off it.
+3. **New `ECONOMY.spanCapacityMW = [50, 90, 140]`** — a span's MW graph-edge capacity per
+   throughput tier, deliberately a separate table from the existing income-multiplier
+   table (same tier number, two independent meanings that coexist on one span).
+4. **`Game.buildNetworkGraph()`/`recomputeNetworkState()`** — the only place that
+   translates live entities into `network.ts`'s plain graph shape. Called from inside
+   `save()` itself (not threaded through every individual call site) — since `save()`
+   already runs at exactly the right set of trigger points, this is simpler and can't
+   miss a call site by accident. `Neighborhood` gained `setNetworkState`/`isServed`/
+   `isRedundant` — pure internal state, no visual/economy consequence yet (that's
+   Waves 4/5).
+
+**A real bug was caught and fixed during the required synthetic-topology verification**:
+the initial N-1 implementation only excluded *substations* used by the first path in the
+second BFS pass, which incorrectly reported "redundant" for a Substation with only one
+physical edge to a Plant and zero intermediate substations (nothing to exclude, so the
+second pass just re-found the identical single edge). Fixed by also excluding the first
+path's *edges*, not just its substations — verified via the exact failing case, then
+re-confirmed all five required topologies pass. **A second real issue was caught**: the
+original `NEIGHBORHOOD.startingDemandMW = 60` exceeded `spanCapacityMW[0] = 50`, meaning
+the very first objective would have been mathematically impossible to serve without a
+mandatory pre-upgrade — lowered to 40 (see `constants.ts`'s comment for the reasoning).
+
+Verified: all five required synthetic topologies pass exactly (single sufficient path;
+two disjoint paths; two paths sharing one substation — the disjointness-specific case
+that caught the bug above; insufficient bottleneck; fault-the-sole-path); a 57-node
+synthetic graph stays sub-millisecond for both algorithms; a real end-to-end chain built
+through actual `Game` entities (Plant→Tower→Substation→Neighborhood, all via the real
+Wave 2 methods) correctly reports served/not-served through a real fault→repair cycle,
+including via the automatic `save()`-triggered recompute path, not just manual calls;
+pure Tower-Tower sandbox play confirmed completely unaffected (decision #7).
+
+## Plant/Neighborhood/Substation redesign — Wave 4 (delivered)
+
+Demand-based revenue — the additive model resolved during planning (see this plan's
+"Design decisions resolved" section): legacy `Span.incomeRate()` keeps paying
+unconditionally for every energized span, sandbox-wide; a fully independent second
+stream pays a served Neighborhood `demandMW * OBJECTIVE.capExPerMWServedPerSec` per
+second (new `OBJECTIVE` constants group, `capExPerMWServedPerSec = 0.08`). A cliff at the
+served boundary, not partial credit — a not-served Neighborhood earns nothing. Redundancy
+doesn't gate this rate (that's a Wave 5 blackout-risk/Wave 6 completion-gate concern, not
+a revenue one). `Game.tick()` sums both streams and hands `Economy.tick()` one combined
+rate, same "dumb accumulator" pattern used since Phase 2.
+
+Verified precisely against the real `tick()` code path (not just the formula in
+isolation): a served Neighborhood's income matched `demandMW * 0.08` exactly via a
+directly-measured CapEx delta; the combined rate (legacy span income + objective income)
+matched exactly through a real end-to-end chain; a not-served Neighborhood (sole
+transmission link faulted) contributed exactly zero while its legacy span income
+(unrelated spans) was unaffected; and — the regression-critical check for decision #7 —
+a plain sandbox span with no Plant/Neighborhood ever involved earned exactly the same
+rate it did before this wave, with zero objective income leaking in.
+
+## Plant/Neighborhood/Substation redesign — Wave 5 (delivered)
+
+Blackout state, derived and purely reactive — never a new independent trigger, per
+decision #6 and section 1.4's explicit constraint. `Neighborhood.setNetworkState`
+detects the specific transition (was served + at-risk, now not-served) and flips
+`blackedOut`, returning a `'blackoutStarted'`/`'blackoutCleared'` event; clears the
+instant a later recompute finds it served again. Visual: a whole-cluster fault-red pulse
+(reusing `Span`'s fault-pulse timing/shape) — served Neighborhoods also got a first
+visual state of their own (a small warm glow) for this to actually read as "worse than,"
+since nothing distinguished served from not-served visually before. New HUD line
+(`.hud-note--fault`'s blinking style, blackout count) sits above the existing fault line.
+
+**Storms were expanded to reach transmission links and distribution spans** — the piece
+explicitly deferred from Wave 2, now landing here because it's the one thing that makes
+blackouts reachable at all (a storm faulting a Tower-Tower-only pool could never take
+down a Neighborhood's sole path). `triggerStorm`'s candidate pool, `spanStormWeight`, and
+`pickWeightedStormTarget` all generalized to read across all three span-bearing arrays;
+the original Tower-Tower-only behavior is a strict subset of the new pool, not replaced.
+
+**The storm softlock-prevention invariant was re-verified explicitly, as required**:
+`STORM.minEnergizedSpansToStrike = 2` now counts across the expanded candidate pool, and
+300 forced storm attempts against a topology with exactly one total energized span
+(tested both as a plain Tower-Tower span and, separately, as a lone distribution span)
+produced zero strikes in both cases — the invariant generalizes cleanly because it's
+span-*count*-based, not span-*type*-based. Global CapEx income can never hit zero from a
+single blackout either: the legacy per-span stream keeps paying regardless (unconditional
+per the Wave 2 revenue-model resolution), and a blackout only zeroes the affected
+Neighborhood's own objective-income stream.
+
+Verified: a real at-risk topology (served, not redundant), storm-faulting its sole
+serving span, confirmed the blackout fires exactly on that transition, objective income
+for that Neighborhood drops to exactly zero, the whole-cluster visual pulse renders
+distinctly from a single faulted line, and a real repair clears it; the HUD correctly
+shows both a blackout line and a fault line simultaneously with distinct text; the
+softlock regression re-check (above); a spot-check confirming storm-weight calculation
+doesn't crash on non-Tower endpoints (Substation/Plant/Neighborhood) and that strikes
+still occur normally once 2+ energized spans exist.
+
+## Plant/Neighborhood/Substation redesign — Wave 6 (delivered)
+
+The first wave verifiable end-to-end as "the actual thing the user asked for" — a real
+Plant-to-Neighborhood chain, built via real clicks, completing a milestone.
+
+1. **Objective model** — `{ id, plant, neighborhood, targetDemandMW, completedAt }`.
+   Completion requires all three: `demandMW >= targetDemandMW`, served, and redundant
+   (decisions #1 and #6). `targetDemandMW` stays fixed at `NEIGHBORHOOD.startingDemandMW`
+   for every objective this wave (not escalating yet) — since demand growth doesn't
+   exist until Wave 7, an escalating target would make every objective after the first
+   mathematically unwinnable; Wave 7 is what makes a real, achievable escalation possible.
+2. **Completion** — checked from `save()` right after `recomputeNetworkState()`. Fires a
+   fanfare (`SoundManager.playMilestoneComplete()` — a three-note ascending triad,
+   distinct from the two-tone upgrade sweep), a `'celebrate'` `ParticleBurst` variant
+   (brighter/wider than dust/spark), and a persistent HUD acknowledgment (a MILESTONES
+   counter in the main panel, not a vanishing toast).
+3. **Respawn** — `OBJECTIVE.respawnDelaySec = 25` after completion, a new Plant+
+   Neighborhood pair spawns at a fresh (randomized, not the fixed starting corners)
+   location with a semi-randomly weighted fuel type (new `pickRandomFuelType()`,
+   weighted so nuclear/coal aren't the *only* thing that ever spawns).
+4. **HUD** — new green `.hud-note--objective` line showing the active objective's live
+   MW-served/target and served/redundant status; a MILESTONES row in the main panel.
+5. **Persistence, with backward-compat synthesis** — `objectives[]` persists by
+   Plant/Neighborhood *id*, not position. A pre-Wave-6 save (Plant/Neighborhood exist,
+   no `objectives` key at all) synthesizes one active objective wrapping the existing
+   pair on load, rather than losing an existing player's progress or leaving them with
+   no objective at all.
+
+Verified end-to-end via real game methods (not synthetic state): built a genuinely
+redundant chain (one Substation with two independent transmission routes to the Plant,
+via two different Towers — the correct way to achieve redundancy under the "one
+Substation per Neighborhood" topology, not two Substations), confirmed the objective
+completed automatically through the real `save()` pipeline, confirmed the fanfare/HUD
+counter fire exactly once even across repeated recomputes, confirmed a new objective
+spawned after the delay at a new location with a real weighted-random fuel type, full
+persistence round-trip (including a completed + two active objectives), backward-compat
+synthesis from a simulated pre-Wave-6 save, and free-build elsewhere on the board
+confirmed completely unaffected (decision #7).
+
+## Plant/Neighborhood/Substation redesign — Wave 7 (delivered)
+
+Demand growth and the capacity warning telegraph — the closing mechanical piece.
+
+1. **Continuous demand growth** — `NEIGHBORHOOD.demandGrowthMWPerSec = 0.05`, applied in
+   `Neighborhood.update(now, dt)` (which gained a `dt` parameter this wave), capped at
+   `demandGrowthCapMW = 130` (comfortably under a maxed-out tier-3 span's 140 MW ceiling,
+   so a fully-upgraded chain can always eventually catch up). Growth applies to every
+   Neighborhood continuously, including ones with an already-completed objective — a
+   milestone isn't a permanent trophy the underlying Neighborhood stops evolving after.
+2. **Capacity warning telegraph** — reuses the storm-warning shape (`NEIGHBORHOOD.
+   demandWarningLeadSec = 30`, a new `SoundManager.playCapacityWarning()` tonally
+   distinct rising tone vs. the storm's descending rumble, a new steady HUD line). A
+   `bottleneckMW` field cached on `Neighborhood` (set alongside `served`/`redundant` by
+   `setNetworkState`, now taking a third parameter) lets the projection run every tick
+   via cheap arithmetic, without re-running the graph algorithm. Fires once per approach
+   (`checkCapacityWarning`, mirroring `Game`'s `lastStormWarningFor` dedup pattern but
+   scoped per-Neighborhood) and resets once no longer approaching, so a later approach
+   can fire again.
+
+Verified via the same synthetic-clock methodology already used for `STORM.
+warningLeadSec`: growth rate matched the formula exactly via a large synthetic `dt`; the
+cap held exactly at an extreme synthetic elapsed time; the warning fired exactly once at
+a controlled tight margin, stayed silent at a comfortable margin, correctly declined to
+fire for an already-not-served Neighborhood (that's a different, already-handled
+problem), and correctly reset/re-fired after returning to a tight margin; the real
+`tick()` wiring confirmed to call `playCapacityWarning()` and update `Neighborhood`'s
+live warning state correctly. Pure sandbox play reconfirmed unaffected.
+
+## Plant/Neighborhood/Substation redesign — Wave 8 (delivered)
+
+Docs and a final regression pass. **This closes out the redesign — all 8 waves are now
+delivered.**
+
+1. **`GUIDE.md`** — the opening paragraph now states the game's real purpose (connecting
+   Plants to Neighborhoods, holding redundancy, completing milestones) instead of only
+   describing the free-build sandbox mechanics, which had gone stale relative to what
+   the game actually is now. Every mechanic from Waves 1-7 already had its own
+   incremental `GUIDE.md` update as it shipped (per the standing "keep the guide
+   current" instruction) — this pass was a coherence read-through, not a rewrite.
+2. **A real bug found and fixed during that read-through**: `markdown.ts`'s renderer
+   never merged consecutive plain-text lines into one paragraph — every line became its
+   own `<p>`, unlike standard Markdown's soft-wrap semantics. Invisible until now because
+   every prior paragraph in `GUIDE.md` happened to be written as a single long line; the
+   new intro paragraph (written with natural sentence-wrapped line breaks) exposed it
+   immediately. Fixed properly in the parser (accumulate lines into a buffer, flush as
+   one `<p>` on a blank line/header/bullet/EOF) rather than just reflowing the one
+   paragraph that triggered it — the more robust fix, since any future multi-line
+   paragraph edit would otherwise hit the same gap again.
+3. **Final regression pass**: a synthetic legacy save predating the *entire* redesign
+   (pure pre-Wave-1 shape — `towers`/`spans`/`camera` only, no
+   `substations`/`plants`/`neighborhoods`/`objectives`/`transmissionLinks`/
+   `distributionSpans` keys at all, including a tier-3 branched tower and a faulted span)
+   loads with zero errors, fully restores the old sandbox network, and remains fully
+   playable (a new tower placed on it after load succeeds) — decision #7's sandbox
+   compatibility promise held at the oldest possible save format, not just the
+   immediately-prior wave's. A comprehensive full-feature save (2 towers, a Tower-Tower
+   span, 2 substations, 2 plants with non-default fuel types, 2 neighborhoods with
+   distinct demand values, 2 transmission links, 2 distribution spans — one faulted, one
+   not — and 2 objectives — one completed, one active) round-trips through every field
+   correctly. `tsc --noEmit` clean throughout.
+
+Verified: the markdown fix confirmed visually (before/after screenshot of the same
+paragraph) and via the accessibility snapshot (full guide content, all headers/lists/
+bold spans/paragraphs, reads correctly end-to-end); both regression saves confirmed with
+zero console errors; a final live screenshot after a real `Shift+R` reset shows a clean,
+healthy fresh-game state with the correct starting HUD (`MILESTONE · 40/40 MW · NOT
+SERVED`, `MILESTONES: 0`).

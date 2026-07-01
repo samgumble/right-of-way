@@ -8,12 +8,22 @@ function easeOutCubic(x: number): number {
 
 type Phase = 'stringing' | 'energizing' | 'energized' | 'faulted';
 export type SpanEvent = 'energized' | 'repaired';
+export type VoltageTier = 'transmission' | 'distribution';
 
 const STRING_DURATION = 420;
 const ENERGIZE_DURATION = 650;
 const STRIKE_FLASH_DURATION = 220;
 const FAULT_PULSE_PERIOD = 1100;
 const TUBE_RADIUS = 0.09;
+/** A distribution span's base tube radius is fixed and smaller, not
+ * `TUBE_RADIUS`-scaled by a multiplier — a real visible thickness difference from a
+ * transmission span at every throughput tier, matching decision #5's "visually
+ * distinct" ask. */
+const DISTRIBUTION_TUBE_RADIUS = 0.045;
+/** Distribution spans sag less dramatically than transmission spans — real local
+ * feeders are shorter and strung tauter. Passed to `computeCatenaryPoints`'s
+ * `sagRatio` param in place of its transmission-tier default (0.12). */
+const DISTRIBUTION_SAG_RATIO = 0.05;
 /** Visible tube gets thicker per throughput tier — a literal, not decorative, cue
  * (matches the pole-visuals precedent of a visual quantity always equaling a real
  * game value). Indexed by (throughputTier - 1). */
@@ -25,6 +35,7 @@ const HIT_RADIUS = 0.7;
  * Can later be struck by a storm (faulted) and clicked to repair. */
 export class Span {
   readonly group: THREE.Group;
+  readonly voltageTier: VoltageTier;
 
   private readonly points: THREE.Vector3[];
   private readonly material: THREE.MeshStandardMaterial;
@@ -40,10 +51,11 @@ export class Span {
   private repairing = false;
   private throughputTier = 1;
 
-  constructor(p1: THREE.Vector3, p2: THREE.Vector3) {
+  constructor(p1: THREE.Vector3, p2: THREE.Vector3, voltageTier: VoltageTier = 'transmission') {
     this.group = new THREE.Group();
     this.group.userData.isSpan = true;
-    this.points = computeCatenaryPoints(p1, p2);
+    this.voltageTier = voltageTier;
+    this.points = computeCatenaryPoints(p1, p2, voltageTier === 'distribution' ? DISTRIBUTION_SAG_RATIO : undefined);
 
     this.material = new THREE.MeshStandardMaterial({
       color: COLORS.steelBlue,
@@ -78,7 +90,8 @@ export class Span {
       this.mesh.geometry.dispose();
     }
 
-    const radius = TUBE_RADIUS * TUBE_RADIUS_MULTIPLIER[this.throughputTier - 1];
+    const baseRadius = this.voltageTier === 'distribution' ? DISTRIBUTION_TUBE_RADIUS : TUBE_RADIUS;
+    const radius = baseRadius * TUBE_RADIUS_MULTIPLIER[this.throughputTier - 1];
     const curve = new THREE.CatmullRomCurve3(slice);
     const geo = new THREE.TubeGeometry(curve, Math.max(1, count - 1), radius, 6, false);
     this.mesh = new THREE.Mesh(geo, this.material);

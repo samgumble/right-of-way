@@ -7,6 +7,10 @@ export function renderMarkdown(markdown: string): string {
   const lines = markdown.split('\n');
   const html: string[] = [];
   let inList = false;
+  // Consecutive plain-text lines (no blank line between them) are one paragraph, joined
+  // with spaces — standard Markdown soft-wrap semantics. Only a blank line, a header, a
+  // bullet, or end-of-input actually ends a paragraph.
+  let paragraphLines: string[] = [];
 
   const closeList = (): void => {
     if (inList) {
@@ -15,24 +19,35 @@ export function renderMarkdown(markdown: string): string {
     }
   };
 
+  const flushParagraph = (): void => {
+    if (paragraphLines.length > 0) {
+      html.push(`<p>${inline(paragraphLines.join(' '))}</p>`);
+      paragraphLines = [];
+    }
+  };
+
   for (const rawLine of lines) {
     const line = rawLine.trim();
 
     if (line === '') {
+      flushParagraph();
       closeList();
       continue;
     }
     if (line.startsWith('## ')) {
+      flushParagraph();
       closeList();
       html.push(`<h2>${inline(line.slice(3))}</h2>`);
       continue;
     }
     if (line.startsWith('# ')) {
+      flushParagraph();
       closeList();
       html.push(`<h1>${inline(line.slice(2))}</h1>`);
       continue;
     }
     if (line.startsWith('- ')) {
+      flushParagraph();
       if (!inList) {
         html.push('<ul>');
         inList = true;
@@ -42,9 +57,10 @@ export function renderMarkdown(markdown: string): string {
     }
 
     closeList();
-    html.push(`<p>${inline(line)}</p>`);
+    paragraphLines.push(line);
   }
 
+  flushParagraph();
   closeList();
   return html.join('\n');
 }

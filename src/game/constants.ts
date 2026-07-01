@@ -70,6 +70,12 @@ export const ECONOMY = {
     { capEx: 150, crewHours: 20 },
     { capEx: 320, crewHours: 45 },
   ],
+  /** MW capacity a span contributes as a graph edge (Wave 3's network algorithm),
+   * indexed by (throughputTier - 1) — a deliberately separate table from
+   * `spanThroughputMultiplier` above. Same tier number, two independent meanings (legacy
+   * income rate vs. graph capacity) that happen to coexist on the same span, not the
+   * same array reused for two different units. */
+  spanCapacityMW: [50, 90, 140] as const,
 } as const;
 
 export const DENY_SHAKE_DURATION_MS = 260;
@@ -129,6 +135,22 @@ export const PERMIT = {
   pendingDurationSec: 10,
 } as const;
 
+export const OBJECTIVE = {
+  /** A served Neighborhood earns `demandMW * capExPerMWServedPerSec` per second — a
+   * cliff at the served boundary (not a partial-credit ramp), matching the binary
+   * "is this objective currently being met" framing. Fully additive on top of the
+   * legacy per-span income (`Span.incomeRate()`), which keeps paying unconditionally
+   * for every energized span regardless of path membership — see PLAN.md's revenue
+   * model decision. Redundancy does NOT gate this rate; it's purely a Wave 6
+   * completion-gate and a Wave 5 blackout-risk factor. */
+  capExPerMWServedPerSec: 0.08,
+  /** Breathing room after a milestone completes before the next Plant+Neighborhood pair
+   * spawns — a completion gets a moment to land rather than being instantly buried
+   * under the next thing. First-pass pacing, same caveat as every other tuning
+   * constant here. */
+  respawnDelaySec: 25,
+} as const;
+
 export const ATMOSPHERE = {
   /** Fog uses view-space depth from the camera, tuned so only the far board corners
    * ever fade — the whole 120×120 board must stay readable at any zoom level. */
@@ -177,4 +199,66 @@ export const RAIN = {
 export const PARTICLE_BURST = {
   dust: { color: COLORS.steelBlue, count: 10, durationMs: 500, speed: 2.2, size: 0.14 },
   spark: { color: COLORS.faultRed, count: 14, durationMs: 420, speed: 4.5, size: 0.09 },
+  /** Milestone completion — brighter/wider spread than dust/spark, a real celebration
+   * beat, not another utility-work cue. */
+  celebrate: { color: COLORS.energizedGreen, count: 22, durationMs: 750, speed: 3.6, size: 0.17 },
+} as const;
+
+export const PLANT = {
+  /** Real-world-informed relative sizing: nuclear/coal have the largest and steadiest
+   * nameplate capacity; renewables have a materially lower capacity factor reflecting
+   * real intermittency. `effectiveCapacityMW` (nameplate × factor) — not nameplate
+   * alone — is what the Wave 3 network algorithm actually reads, so fuel type is a real
+   * gameplay difficulty lever even though plants are never purchased/upgraded. First-pass
+   * numbers, tunable like every other ECONOMY/STORM constant. */
+  fuelSpecs: {
+    coal: { nameplateCapacityMW: 300, capacityFactor: 0.85 },
+    gas: { nameplateCapacityMW: 200, capacityFactor: 0.9 },
+    nuclear: { nameplateCapacityMW: 500, capacityFactor: 0.93 },
+    hydro: { nameplateCapacityMW: 150, capacityFactor: 0.75 },
+    solar: { nameplateCapacityMW: 100, capacityFactor: 0.25 },
+    wind: { nameplateCapacityMW: 120, capacityFactor: 0.35 },
+  },
+} as const;
+
+export const SUBSTATION = {
+  /** Placement CapEx cost — pricier than a base tower, reflecting bigger infrastructure.
+   * Terrain-multiplied on top, same as tower cost. */
+  cost: 220,
+  /** Connection-slot count — governs the insulator-nub visual on its transmission side,
+   * same "visual quantity = real capacity" discipline as Tower. Small and fixed: a
+   * Substation is a single fixed-capacity purchase, not an upgradeable lattice tower. */
+  maxConnections: 3,
+  /** MW throughput ceiling the Wave 3 network algorithm reads. Sourced from this same
+   * constant group as `maxConnections` so there's exactly one place either number could
+   * drift from the other, not a separate upgrade-tier table. */
+  capacityMW: 220,
+  /** Crew-Hours cost to connect a Substation to a Neighborhood (a distribution span) —
+   * same distance-scaled shape as `ECONOMY.spanCostBase`/`spanCostPerUnitDistance`, kept
+   * as its own (smaller) pair since a short local feeder costs less labor than a
+   * transmission span of the same length. */
+  distributionSpanCostBase: 15,
+  distributionSpanCostPerUnitDistance: 0.5,
+} as const;
+
+export const NEIGHBORHOOD = {
+  /** Fixed starting demand for the Wave 1 hardcoded objective. Deliberately kept below
+   * `ECONOMY.spanCapacityMW[0]` (50) — a fresh player stringing an all-tier-1 chain must
+   * be *able* to serve the very first objective without a mandatory pre-upgrade; demand
+   * growth (Wave 7) is what's supposed to force future upgrades, not day-one blocking. */
+  startingDemandMW: 40,
+  /** Continuous, not stepped — a creeping number that can flip "served" to "not served"
+   * at any moment, organic pressure rather than an artificial cliff at a fixed mark
+   * (PLAN.md's Wave 7 pacing decision). At this rate, crossing from the starting 40 MW
+   * to a tier-1 span's 50 MW capacity ceiling takes ~200s — long enough to notice and
+   * react to the warning telegraph below, not an ambush. */
+  demandGrowthMWPerSec: 0.05,
+  /** Soft ceiling so growth doesn't run away unboundedly — kept comfortably under a
+   * maxed-out tier-3 span's 140 MW capacity so a fully-upgraded single-path chain can
+   * always eventually catch up, rather than every Neighborhood inevitably outgrowing
+   * what any topology could ever serve. */
+  demandGrowthCapMW: 130,
+  /** Lead time for the capacity warning telegraph — longer than the storm warning's 4s
+   * since reacting means a real deliberate upgrade decision, not a quick glance. */
+  demandWarningLeadSec: 30,
 } as const;
