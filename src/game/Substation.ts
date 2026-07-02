@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { COLORS, DENY_SHAKE_DURATION_MS, SUBSTATION } from './constants';
+import { COLORS, DENY_SHAKE_DURATION_MS, LOCAL_GLOW, SUBSTATION, SUBSTATION_DETAIL } from './constants';
 import { denyShakeOffset, easeOutBack } from './feedback';
 import { insulatorGeo } from './sharedGeometry';
 
@@ -45,10 +45,10 @@ function addInsulatorsForTier(group: THREE.Group, material: THREE.Material, targ
  * types read apart from Tower and each other at a glance. Tier 1 only — tier 2's nubs
  * are added later by `addInsulatorsForTier` (`Substation.upgrade()`/
  * `materializeFromSave()`), never rebuilt here. */
-export function buildSubstationVisual(material: THREE.Material): THREE.Group {
+export function buildSubstationVisual(material: THREE.Material, padMaterial: THREE.Material = material): THREE.Group {
   const group = new THREE.Group();
 
-  const pad = new THREE.Mesh(new THREE.BoxGeometry(PAD_WIDTH, PAD_HEIGHT, PAD_DEPTH), material);
+  const pad = new THREE.Mesh(new THREE.BoxGeometry(PAD_WIDTH, PAD_HEIGHT, PAD_DEPTH), padMaterial);
   pad.position.y = PAD_HEIGHT / 2;
   group.add(pad);
 
@@ -56,6 +56,51 @@ export function buildSubstationVisual(material: THREE.Material): THREE.Group {
     const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.36, TANK_HEIGHT, 8), material);
     tank.position.set(x, PAD_HEIGHT + TANK_HEIGHT / 2, z);
     group.add(tank);
+
+    // Ceramic bushings atop the tank — real hardware detail, fixed regardless of tier
+    // (distinct from the fence-line insulator nubs, which do encode tier capacity).
+    for (let i = 0; i < SUBSTATION_DETAIL.bushingsPerTank; i++) {
+      const bushingOffset = (i - (SUBSTATION_DETAIL.bushingsPerTank - 1) / 2) * 0.18;
+      const bushing = new THREE.Mesh(insulatorGeo, material);
+      bushing.position.set(x + bushingOffset, PAD_HEIGHT + TANK_HEIGHT + 0.15, z);
+      group.add(bushing);
+    }
+
+    // Radiator fins on the tank's outward side — real transformer cooling-fin
+    // silhouette, pure polish (every tank has fins regardless of tier).
+    for (const finOffset of [-0.35, 0, 0.35]) {
+      const fin = new THREE.Mesh(
+        new THREE.BoxGeometry(SUBSTATION_DETAIL.finWidth, SUBSTATION_DETAIL.finHeight, SUBSTATION_DETAIL.finDepth),
+        material,
+      );
+      const outwardSign = z >= 0 ? 1 : -1;
+      fin.position.set(x, PAD_HEIGHT + TANK_HEIGHT / 2 + finOffset * 0.4, z + outwardSign * 0.4);
+      group.add(fin);
+    }
+  }
+
+  // Chain-link fence posts around the pad perimeter — finally delivers on this
+  // module's own doc comment ("a fenced utility-yard silhouette"), which had no actual
+  // fence geometry until this wave.
+  const halfWidth = PAD_WIDTH / 2;
+  const halfDepth = PAD_DEPTH / 2;
+  const fencePositions: [number, number][] = [
+    [-halfWidth, -halfDepth],
+    [halfWidth, -halfDepth],
+    [-halfWidth, halfDepth],
+    [halfWidth, halfDepth],
+    [0, -halfDepth],
+    [0, halfDepth],
+    [-halfWidth, 0],
+    [halfWidth, 0],
+  ];
+  for (const [x, z] of fencePositions) {
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(SUBSTATION_DETAIL.fencePostRadius, SUBSTATION_DETAIL.fencePostRadius, SUBSTATION_DETAIL.fencePostHeight, 5),
+      padMaterial,
+    );
+    post.position.set(x, PAD_HEIGHT + SUBSTATION_DETAIL.fencePostHeight / 2, z);
+    group.add(post);
   }
 
   addInsulatorsForTier(group, material, 1);
@@ -78,6 +123,9 @@ export class Substation {
   readonly distPos: THREE.Vector3;
 
   private readonly material: THREE.MeshStandardMaterial;
+  /** Separate, always-neutral concrete-pad material — never touched by
+   * `setSelected()`/the energized glow, same precedent as `Tower.padMaterial`. */
+  private readonly padMaterial: THREE.MeshStandardMaterial;
   private readonly basePos: THREE.Vector3;
   private selected = false;
   private connections = 0;
@@ -88,6 +136,9 @@ export class Substation {
   private denyStart: number | null = null;
   private permitClearAt: number | null = null;
   private activationPulseStart: number | null = null;
+  /** Set by `Game.recomputeNetworkState()` — true iff at least one connected span is
+   * currently energized. Same idiom as `Tower`'s own energized glow. */
+  private energized = false;
 
   constructor(gridI: number, gridJ: number, worldPos: THREE.Vector3, pendingDurationMs = 0) {
     this.gridI = gridI;
@@ -100,11 +151,19 @@ export class Substation {
       emissiveIntensity: 0,
       transparent: true,
       opacity: 1,
-      roughness: 0.5,
-      metalness: 0.45,
+      roughness: 0.25,
+      metalness: 0.55,
     });
 
-    this.group = buildSubstationVisual(this.material);
+    this.padMaterial = new THREE.MeshStandardMaterial({
+      color: COLORS.steelBlueDim,
+      roughness: 0.9,
+      metalness: 0.05,
+      transparent: true,
+      opacity: 1,
+    });
+
+    this.group = buildSubstationVisual(this.material, this.padMaterial);
     this.group.position.copy(this.basePos);
     this.group.scale.setScalar(0.001);
     this.group.userData.isSubstation = true;
@@ -129,6 +188,12 @@ export class Substation {
 
   isSelected(): boolean {
     return this.selected;
+  }
+
+  /** Same "this thing has power" cue as `Tower.setEnergizedGlow` — routed through the
+   * existing bloom pass, not a new dynamic light. */
+  setEnergizedGlow(active: boolean): void {
+    this.energized = active;
   }
 
   getTier(): number {
@@ -187,6 +252,7 @@ export class Substation {
     if (pendingMs && pendingMs > 0) {
       this.permitClearAt = performance.now() + pendingMs;
       this.material.opacity = 0.65;
+      this.padMaterial.opacity = 0.65;
     }
     for (let t = 2; t <= tier; t++) addInsulatorsForTier(this.group, this.material, t);
     this.tier = tier;
@@ -227,11 +293,21 @@ export class Substation {
         this.permitClearAt = null;
         this.activationPulseStart = now;
         this.material.opacity = 1;
+        this.padMaterial.opacity = 1;
         event = 'permitCleared';
       } else {
         const cycle = (now % 1400) / 1400;
-        this.material.opacity = 0.45 + (0.5 + 0.5 * Math.sin(cycle * Math.PI * 2)) * 0.4;
+        const pendingOpacity = 0.45 + (0.5 + 0.5 * Math.sin(cycle * Math.PI * 2)) * 0.4;
+        this.material.opacity = pendingOpacity;
+        this.padMaterial.opacity = pendingOpacity;
       }
+    }
+
+    // Energized glow — only once every transient pulse has settled and selection isn't
+    // already claiming the emissive channel, same precedent as `Tower`.
+    if (this.settled && !this.selected && this.activationPulseStart === null && this.permitClearAt === null) {
+      this.material.emissive.set(this.energized ? COLORS.keyLight : 0x000000);
+      this.material.emissiveIntensity = this.energized ? LOCAL_GLOW.nodeGlowIntensity : 0;
     }
 
     this.group.position.copy(this.basePos);

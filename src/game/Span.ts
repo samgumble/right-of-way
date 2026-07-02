@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { computeCatenaryPoints } from './catenary';
-import { COLORS, ECONOMY } from './constants';
+import { COLORS, ECONOMY, SPAN_DETAIL } from './constants';
 
 function easeOutCubic(x: number): number {
   return 1 - Math.pow(1 - x, 3);
@@ -78,7 +78,23 @@ export class Span {
     const hitMesh = new THREE.Mesh(hitGeo, new THREE.MeshBasicMaterial({ visible: false }));
     this.group.add(hitMesh);
 
+    // Dead-end clamp stubs at each endpoint — the cable's real hardware connection
+    // point, oriented along the span's own initial direction at that end. Reuses
+    // `this.material` directly, so a clamp's color/emissive automatically tracks the
+    // span's live phase (steel-blue/energized-green/fault-red) with zero extra wiring.
+    this.addEndClamp(this.points[0], this.points[1]);
+    this.addEndClamp(this.points[this.points.length - 1], this.points[this.points.length - 2]);
+
     this.rebuildGeometry(2 / this.points.length);
+  }
+
+  private addEndClamp(point: THREE.Vector3, towardPoint: THREE.Vector3): void {
+    const direction = towardPoint.clone().sub(point).normalize();
+    const clampGeo = new THREE.CylinderGeometry(SPAN_DETAIL.clampRadius, SPAN_DETAIL.clampRadius, SPAN_DETAIL.clampLength, 6);
+    const clamp = new THREE.Mesh(clampGeo, this.material);
+    clamp.position.copy(point);
+    clamp.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+    this.group.add(clamp);
   }
 
   private rebuildGeometry(revealFraction: number): void {

@@ -34,9 +34,27 @@ holds throughout. This pass's own verification also surfaced a real, load-bearin
 *testing-methodology* discovery — a `beforeunload`-triggered autosave race that was
 silently defeating `localStorage.clear()`-based test resets — documented in the 10x
 pass's Wave 4 section below, worth reading before resetting state ad hoc in a future
-session. **The next thing to do with this project is a real human playtest** — see
-"Known gaps" at the bottom for the full, honest list of what's been verified *correct*
-but not yet *fun*.
+session.
+
+**A third pass, "10x models & graphics" (7 more waves — richer entity geometry, terrain
+dressing, deeper rendering), is also now fully delivered.** Denser, more detailed
+low-poly silhouettes across every entity type (tier-scaled tower bracing, per-fuel
+PowerPlant detail, Substation fencing, Neighborhood chimneys), sparse deterministic
+terrain dressing (trees/rocks — the board had none before), a color-grade shader, dusk
+sun coloring, and an emissive-based "this thing has power" glow (deliberately *not* real
+dynamic lights — see that pass's own section for the reasoning). **A genuine pre-existing
+bug was found during this pass's required bloom-review checkpoint and deliberately left
+unfixed, not silently corrected**: `Game.ts`'s `UnrealBloomPass` constructor passes
+`radius`/`threshold` in the wrong order relative to the installed library's actual
+signature, meaning the game has been running with those two swapped since Phase 4 — the
+whole game's visual identity has been eyeballed and tuned against this exact behavior for
+its entire life, so fixing it now would be a real, unreviewed visual shift, not a small
+correction. Flagged explicitly in that pass's own section and in "Known gaps" below,
+awaiting an explicit decision rather than being bundled into an unrelated diff.
+
+**The next thing to do with this project is a real human playtest** — see "Known gaps"
+at the bottom for the full, honest list of what's been verified *correct* but not yet
+*fun* (or, in the bloom case, not yet *decided*).
 
 Read [PLAN.md](PLAN.md) first for roadmap/status. This doc is the "how it works and
 why" for whoever (human or Claude) picks this project up next.
@@ -1099,6 +1117,147 @@ used for every reset from that point on: before `localStorage.clear()` +
 otherwise re-save mid-navigation. Recorded here explicitly because the existing
 documented lesson ("just use `Shift+R`") doesn't cover the *custom-payload* legacy-save
 testing case this pass specifically needed.
+
+## "10x models & graphics" pass architecture additions
+
+Seven waves — a combined pass across richer entity geometry, new environmental/terrain
+dressing, and deeper rendering/lighting, per the user's explicit "all three, balanced"
+choice. A dedicated Explore pass cataloged the actual current-state geometry/terrain/
+rendering pipeline before any design work; a background Plan agent then designed a
+detailed 8-wave implementation against that inventory, synthesized here into 7 waves
+after independently verifying two of its own risk claims against real source (see the
+plan file's "Context" section for the full write-up) and making one deliberate
+architecture simplification (real `THREE.PointLight`s → an emissive-based glow through
+the existing bloom pass, see Wave 1 below).
+
+- **`GradeShader.ts`** (new) — a hand-rolled, `ShaderPass`-compatible split-tone shader
+  (cool `steelBlueDim` shadows, warm `keyLight` highlights, both existing palette
+  colors), matching this project's "hand-write the math, no new dependency" precedent
+  extended into color grading. Inserted into `Game.ts`'s composer chain as `this.
+  gradePass`, between `OutputPass` and the existing `vignettePass` (grading needs the
+  final sRGB buffer, same reasoning already documented for vignette's own ordering; it
+  runs first so corner-darkening isn't itself re-tinted by the grade).
+- **`Game.ts` `updateAtmosphere`**: gained a dusk-only sun color shift on top of the
+  existing two-point intensity lerp — a `duskFactor = max(0, 1 - |dayFactor - 0.5| * 2)`
+  peaks exactly at the day/night crossover (verified: `fff1de` at noon/midnight,
+  `ffb066` at both crossovers, exactly matching `ATMOSPHERE.duskKeyColorHex`). New
+  `dayKeyColor`/`duskKeyColor`/`scratchSunColor` fields.
+- **`Tower.ts`/`Substation.ts` `setEnergizedGlow(active)`**: boosts `emissiveIntensity`
+  toward `LOCAL_GLOW.nodeGlowIntensity` (applied every `update()` frame while idle, same
+  "selection wins visually" precedent as everywhere else) — called from `Game.
+  recomputeNetworkState()`'s existing per-span-array iteration, which now also checks
+  whether each Tower/Substation has at least one currently-energized connected span.
+  **`PowerPlant.update()`** sets its own `emissiveIntensity` proportional to
+  `effectiveCapacityMW() / nameplateCapacityMW` every tick — already computing
+  `outputMultiplier` there, a small addition, not new architecture. Verified all three
+  live end-to-end (a real energized transmission link toggling a Tower's glow via the
+  real `recomputeNetworkState()` path, not a direct call; a gas plant's glow matching
+  `0.3 * 0.9 = 0.27` exactly, its real capacity factor).
+- **Material variety** (`Tower.ts`/`Substation.ts`/`Neighborhood.ts`/`PowerPlant.ts`):
+  every entity's `roughness`/`metalness` retuned so they stop reading as one uniform
+  "steel" finish. `Tower`/`Substation` each gained a separate, always-neutral
+  `padMaterial` for their concrete base (never touched by `setSelected()` — the
+  structural material still highlights, matching real inspection practice where you
+  wouldn't highlight a footing). `buildTowerVisual`/`buildSubstationVisual` both gained
+  an optional `padMaterial` parameter defaulting to `material`, so the ghost-preview
+  call sites needed zero changes. `Neighborhood` gained a `roofMaterial` kept in exact
+  lockstep with `material` via a new `stateMaterials: THREE.MeshStandardMaterial[]`
+  array that `setSelected()`/`update()`'s state-color logic now loops over instead of
+  writing one hardcoded field — verified served/selected/blackout states all apply
+  identically to both materials, and that pending-permit opacity pulses stay
+  synchronized across `material`/`padMaterial` on Tower/Substation (a real regression
+  risk from splitting materials that wasn't previously a concern with one shared
+  reference).
+- **`Tower.ts` geometry depth**: a new `addXBrace` free function (diagonal X cross-
+  bracing, 2 mirrored thin boxes per brace) at 4 fixed `TOWER_DETAIL.braceHeightFracs`
+  slots — indexed directly rather than recomputed from a live total, so a later tier's
+  addition can never reposition an earlier tier's already-placed brace (same "each tier
+  gets its own row" discipline as `Substation`'s own tier-nub system). Brace count is
+  cumulative by tier (2/3/4) but deliberately *not* capacity-encoding, unlike arm/
+  insulator count — pure structural silhouette. A new `addJumper` free function adds a
+  short hardware stub below every insulator, base and tier-added alike. The single base
+  box became 4 corner footing piers via `padMaterial`. New private `addBracingForTier`
+  mirrors `addArmForTier`'s exact "current tier before upgrading" convention and is
+  called from the same two sites (`upgrade()`, `materializeFromSave()`). Verified exact
+  mesh counts at every tier/branch (tier 1: 15/4 braces/4 footings/2 jumpers; tier 2:
+  22/6/4/4; tier 3 Capacity: 33/8/4/8; tier 3 Resilience: 30/8/4/6) and the collision-
+  clearance math directly (highest brace at world y=1.71, lowest possible arm — tier-3
+  Resilience's second — at y=2.16).
+- **`PowerPlant.ts` fuel-silhouette depth**: each `addFuelDetail` case gained 2-4 more
+  primitives (stack collars for coal/gas, a nameplate-capacity-scaled coal pile via a
+  new `PLANT_DETAIL.coalPileMaxRadius` formula, gas storage tanks, a second nuclear
+  reactor-containment dome + switchyard fence, dam support piers + a spillway foam
+  plane for hydro, solar mounting struts + an inverter box, wind nacelle housings at
+  each hub). Verified exact mesh counts per fuel type (coal 6, gas 5, nuclear 5, hydro
+  6, solar 10, wind 10) and the coal-pile formula to the exact float (0.54 for real
+  nameplate values).
+- **`Substation.ts`/`Neighborhood.ts` geometry depth**: Substation gained 8 fence posts
+  (finally delivering on its own pre-existing doc comment, which had described "a
+  fenced utility-yard silhouette" with no actual fence until this wave), 2 bushings per
+  tank (reusing `insulatorGeo`), and 3 radiator fins per tank — all fixed regardless of
+  tier, verified not to collide with the tier-2 nub row. Neighborhood gained a chimney
+  (`roofMaterial`) and foundation strip (`material`) per house — both automatically
+  inherit the existing `stateMaterials` lockstep since they reuse the same material
+  instances, zero new wiring. A 5th "community structure" the background agent proposed
+  was deliberately **not** built — resolved against the project's own established
+  exact-4-houses/exact-8-windows "small, countable visual quantity" discipline. Verified
+  exact mesh counts (Substation tier 1: 30, tier 2: 32; Neighborhood: 24 = 4 × 6).
+- **`Grid.ts` environment dressing**: new `buildEnvironmentDressing()` (called right
+  after the existing `buildTerrainPatches()`), `buildTrees()`, `buildRocks()` — sparse,
+  deterministic tree clusters (flat/hill terrain, hill-correlated density via
+  `ENVIRONMENT_DRESSING.treeChanceHillMultiplier`) and rock outcrops (hill only), using
+  two new `hash01` seed channels (100, 101 — clear of the existing 1-5 range terrain
+  patches use and `Neighborhood`'s own house-jitter range) so dressing density is
+  independently tunable from terrain-type thresholds. `InstancedMesh` per dressing
+  type, matching the exact existing terrain-patch instancing pattern. **The one
+  genuinely new-territory risk, verified directly against source rather than assumed**:
+  every raycast method in `Game.ts` (`raycastGroundNode`/`raycastTower`/`raycastSpan`/
+  `raycastPlant`/`raycastNeighborhood`/`raycastSubstation`) targets an explicit array of
+  entity groups or `grid.groundMesh` specifically, never `grid.group` as a whole — so
+  dressing meshes added as `grid.group` siblings are automatically invisible to every
+  raycast, with zero extra exclusion code needed (simpler than the background agent's
+  own more cautious `userData`-tag/`raycast: () => {}`-override suggestion). Verified in
+  practice, not just by inspection: a real dispatched click at a tree-bearing node (grid
+  11,11) correctly placed a tower there. Placement re-derived independently and cross-
+  checked against live instance counts (21 trees, 4 rocks) — exact match; confirmed zero
+  trees/rocks on water/marsh, all rocks hill-only.
+- **`Span.ts` end-clamps**: a new `addEndClamp` method adds a short "dead-end clamp"
+  cylinder at each catenary endpoint, oriented along the span's own initial direction at
+  that end, reusing `this.material` directly — verified the clamp's color automatically
+  tracks fault-red/energized-green state with zero separate wiring, and that clamp
+  geometry doesn't interfere with click-to-repair raycasting (a real dispatched click on
+  a faulted span's midpoint still triggered a real repair).
+
+**A genuine pre-existing bug found during this pass's own required bloom-review
+checkpoint, deliberately left unfixed rather than silently corrected**: `Game.ts`'s
+`this.bloomPass = new UnrealBloomPass(vec2, BLOOM.strength, BLOOM.threshold, BLOOM.
+radius)` call passes its 3rd/4th arguments in the wrong order — confirmed directly
+against the installed `three` package's own `UnrealBloomPass.js` source, whose real
+constructor signature is `(resolution, strength = 1, radius, threshold)`, not
+`(resolution, strength, threshold, radius)`. This means `BLOOM.threshold` (0.4) has
+actually always been assigned to the library's `radius` property, and `BLOOM.radius`
+(0.2) to `threshold` — reading the live values back confirms it (`bloomPass.radius ===
+0.4`, `bloomPass.threshold === 0.2`, the reverse of what the constant names say). Net
+effect: more bloom spread and a lower luminance cutoff than every prior wave's "confirm
+bloom looks reasonable" review believed it was checking. This has been true since Phase
+4 originally added bloom — not introduced by this session. **Deliberately not fixed
+here**: the game's entire visual identity has been eyeballed and screenshot-reviewed
+against this exact (swapped) behavior for its whole life; correcting it now would be a
+real, unreviewed shift in overall look across every bloom-affected element in the game,
+not a narrow bug fix, and deserves its own explicit decision rather than being folded
+into this wave's diff. Flagged here and in PLAN.md's "Up next" and "Known gaps" below.
+
+Verified across all 7 waves: `tsc --noEmit` clean after every wave; every new geometry
+addition confirmed via exact scene-traversal mesh/instance counts (matching this
+project's own "confirm exact counts" precedent, not eyeballed); the terrain-dressing
+raycast-safety claim confirmed via a real dispatched click, not just code reading; the
+storm softlock-prevention invariant re-confirmed via 300 forced attempts against a
+single-energized-span topology (0 strikes) — expected, since a `git diff` of `Game.ts`
+against `triggerStorm`/`minEnergizedSpansToStrike`/candidate-selection code showed this
+pass touched none of it; zero new persisted fields across the entire pass (every
+addition reconstructs from existing tier/branch/fuelType state), confirmed via a full
+save/reload round-trip on a tier-3-Resilience-tower + tier-2-Substation scene with mesh
+counts matching Waves 3/5's own confirmed numbers exactly (30, 32) after reload.
 
 ## Key decisions and why
 
@@ -2373,6 +2532,27 @@ trust wall-clock `sleep` alone to advance game time.
   end-to-end. If anything, the case for a real playtest before any further "keep going"
   is stronger now than after the 8-wave redesign alone — this is the third round of
   "verified correct, unvalidated as fun" depth added consecutively.
+- **The follow-up "10x models & graphics" pass (7 more waves) is also now fully
+  delivered.** Unlike the two mechanics-heavy passes above, this one is purely visual,
+  so the "unvalidated as fun" risk doesn't really apply the same way — but "unvalidated
+  as *good-looking in motion, in a real continuous session*" does. Every new primitive/
+  material/shader is verified *correct* (exact counts, exact formulas, a real click-
+  through regression), but nobody has watched a full day/night cycle's dusk-color shift
+  play out in real time, watched the new tower bracing/footings read at normal zoom
+  during actual building, or judged whether the sparse tree/rock density feels right
+  rather than just statistically matching its own formula.
+- **A real, unresolved bloom bug from this pass, not yet decided**: `Game.ts`'s
+  `UnrealBloomPass` constructor has `radius`/`threshold` swapped relative to the
+  installed library's real signature — confirmed against the package source, not
+  guessed — meaning the game has run with more bloom spread and a lower luminance
+  cutoff than the `BLOOM` constant names describe, since Phase 4. See this file's "10x
+  models & graphics pass architecture additions" section for the full detail. Left
+  unfixed on purpose because the entire game's visual identity has been tuned against
+  this exact bug for its whole life — fixing it is a real decision about overall look,
+  not a narrow correctness fix, and belongs to whoever picks this project up next to
+  make deliberately (ideally after finally seeing the game in a real playtest, so any
+  bloom change is judged against how the game actually reads in play, not another
+  isolated screenshot).
 
 ## Maintenance note
 

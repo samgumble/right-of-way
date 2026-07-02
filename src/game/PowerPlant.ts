@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, PLANT, WIND_TURBINE } from './constants';
+import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, LOCAL_GLOW, PLANT, PLANT_DETAIL, WIND_TURBINE } from './constants';
 import { denyShakeOffset, easeOutBack } from './feedback';
 import { hash01 } from './Grid';
 
@@ -48,23 +48,88 @@ function addFuelDetail(
   windPivotsOut: THREE.Group[],
 ): void {
   switch (fuelType) {
-    case 'coal':
+    case 'coal': {
+      // Stacks read as concrete/lined steel — a real, distinct surface finish from the
+      // plant's structural steel base, not just a color swap. Local to this call
+      // (matching the existing spillway/panel material precedent below), so it's never
+      // touched by selection or the energized glow.
+      const stackMat = new THREE.MeshStandardMaterial({
+        color: COLORS.steelBlue,
+        roughness: 0.7,
+        metalness: 0.2,
+      });
       for (const side of [-0.7, 0.7]) {
-        const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 3.2, 8), material);
+        const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 3.2, 8), stackMat);
         stack.position.set(side, BASE_HEIGHT + 1.6, 0);
         group.add(stack);
+
+        const collar = new THREE.Mesh(
+          new THREE.CylinderGeometry(PLANT_DETAIL.stackCollarRadius, PLANT_DETAIL.stackCollarRadius, PLANT_DETAIL.stackCollarHeight, 8),
+          stackMat,
+        );
+        collar.position.set(side, BASE_HEIGHT + 0.15, 0);
+        group.add(collar);
       }
+
+      // On-site fuel stockpile — the one real decoration-as-data opportunity in this
+      // wave: pile size reflects nameplate capacity relative to nuclear's (the largest
+      // fuel type), so a bigger coal plant genuinely shows a bigger pile.
+      const pileMat = new THREE.MeshStandardMaterial({ color: COLORS.steelBlueDim, roughness: 0.95, metalness: 0 });
+      const pileRadius =
+        PLANT_DETAIL.coalPileMaxRadius * (PLANT.fuelSpecs.coal.nameplateCapacityMW / PLANT.fuelSpecs.nuclear.nameplateCapacityMW);
+      const pile = new THREE.Mesh(new THREE.ConeGeometry(pileRadius, pileRadius * 0.8, 8), pileMat);
+      pile.position.set(0, (pileRadius * 0.8) / 2, BASE_DEPTH * 0.5 + pileRadius * 0.6);
+      group.add(pile);
       break;
+    }
     case 'gas': {
-      const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 4.4, 8), material);
+      const stackMat = new THREE.MeshStandardMaterial({
+        color: COLORS.steelBlue,
+        roughness: 0.7,
+        metalness: 0.2,
+      });
+      const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 4.4, 8), stackMat);
       stack.position.set(0, BASE_HEIGHT + 2.2, 0);
       group.add(stack);
+
+      const collar = new THREE.Mesh(
+        new THREE.CylinderGeometry(PLANT_DETAIL.stackCollarRadius * 0.7, PLANT_DETAIL.stackCollarRadius * 0.7, PLANT_DETAIL.stackCollarHeight, 8),
+        stackMat,
+      );
+      collar.position.set(0, BASE_HEIGHT + 0.15, 0);
+      group.add(collar);
+
+      // Small on-site gas storage tanks, distinct from coal's fuel pile — a real fuel
+      // type gets a real, distinct fuel-handling silhouette, not just a stack.
+      const tankMat = new THREE.MeshStandardMaterial({ color: COLORS.steelBlue, roughness: 0.3, metalness: 0.6 });
+      for (const side of [-0.9, 0.9]) {
+        const tank = new THREE.Mesh(new THREE.CylinderGeometry(PLANT_DETAIL.gasTankRadius, PLANT_DETAIL.gasTankRadius, PLANT_DETAIL.gasTankHeight, 8), tankMat);
+        tank.rotation.z = Math.PI / 2;
+        tank.position.set(side, PLANT_DETAIL.gasTankRadius + 0.05, BASE_DEPTH * 0.5 + 0.4);
+        group.add(tank);
+      }
       break;
     }
     case 'nuclear': {
       const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.3, 3.6, 12), material);
       tower.position.set(0, BASE_HEIGHT + 1.8, 0);
       group.add(tower);
+
+      // A second, smaller domed reactor containment building — real nuclear plants
+      // have both the hyperboloid cooling tower *and* a domed reactor building; only
+      // the cooling tower existed before this wave.
+      const domeMat = new THREE.MeshStandardMaterial({ color: COLORS.steelBlueDim, roughness: 0.5, metalness: 0.3 });
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(PLANT_DETAIL.nuclearDomeRadius, 10, 6, 0, Math.PI * 2, 0, Math.PI / 2), domeMat);
+      dome.position.set(2.0, BASE_HEIGHT, -0.5);
+      group.add(dome);
+
+      // Low switchyard fence detail around the site perimeter.
+      const fenceMat = new THREE.MeshStandardMaterial({ color: COLORS.steelBlueDim, roughness: 0.6, metalness: 0.4 });
+      for (const side of [-1, 1]) {
+        const fence = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.3, BASE_DEPTH + 0.6), fenceMat);
+        fence.position.set(side * (BASE_WIDTH * 0.5 + 0.3), 0.15, 0);
+        group.add(fence);
+      }
       break;
     }
     case 'hydro': {
@@ -81,6 +146,23 @@ function addFuelDetail(
       const spillway = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.4, BASE_DEPTH * 0.6), spillwayMat);
       spillway.position.set(0, BASE_HEIGHT + 0.2, -BASE_DEPTH * 0.3);
       group.add(spillway);
+
+      // A brighter water-foam plane at the spillway base, plus 2 dam support piers.
+      const foamMat = new THREE.MeshStandardMaterial({ color: COLORS.waterTint, roughness: 0.2, metalness: 0, transparent: true, opacity: 0.7 });
+      const foam = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.5), foamMat);
+      foam.rotation.x = -Math.PI / 2;
+      foam.position.set(0, 0.03, BASE_DEPTH * -0.1);
+      group.add(foam);
+
+      const pierMat = new THREE.MeshStandardMaterial({ color: COLORS.steelBlueDim, roughness: 0.9, metalness: 0.05 });
+      for (const side of [-1, 1]) {
+        const pier = new THREE.Mesh(
+          new THREE.BoxGeometry(PLANT_DETAIL.hydroPierWidth, PLANT_DETAIL.hydroPierHeight, PLANT_DETAIL.hydroPierWidth),
+          pierMat,
+        );
+        pier.position.set(side * (BASE_WIDTH * 0.5 + 0.7), PLANT_DETAIL.hydroPierHeight / 2, -BASE_DEPTH * 0.5);
+        group.add(pier);
+      }
       break;
     }
     case 'solar': {
@@ -97,6 +179,24 @@ function addFuelDetail(
           group.add(panel);
         }
       }
+
+      // Support struts beneath each row (currently the panels float with no visible
+      // mounting) plus a small inverter box at the array's edge.
+      const strutMat = new THREE.MeshStandardMaterial({ color: COLORS.steelBlueDim, roughness: 0.7, metalness: 0.3 });
+      for (let row = 0; row < 2; row++) {
+        const strut = new THREE.Mesh(new THREE.BoxGeometry(0.08, PLANT_DETAIL.solarStrutLength, 0.08), strutMat);
+        strut.rotation.x = -0.35;
+        strut.position.set(-1.5, BASE_HEIGHT * 0.5 + row * 0.5 - 0.35, -1 + row * 1.0);
+        group.add(strut);
+      }
+
+      const inverterMat = new THREE.MeshStandardMaterial({ color: COLORS.steelBlue, roughness: 0.5, metalness: 0.4 });
+      const inverter = new THREE.Mesh(
+        new THREE.BoxGeometry(PLANT_DETAIL.solarInverterSize, PLANT_DETAIL.solarInverterSize, PLANT_DETAIL.solarInverterSize),
+        inverterMat,
+      );
+      inverter.position.set(2.0, PLANT_DETAIL.solarInverterSize / 2, -1.5);
+      group.add(inverter);
       break;
     }
     case 'wind':
@@ -119,6 +219,15 @@ function addFuelDetail(
         const blade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.4, 0.18), material);
         pivot.add(blade);
         windPivotsOut.push(pivot);
+
+        // A nacelle housing at the hub — previously blades pivoted directly off the bare
+        // mast top with nothing to visually anchor them.
+        const nacelle = new THREE.Mesh(
+          new THREE.BoxGeometry(PLANT_DETAIL.windNacelleWidth, PLANT_DETAIL.windNacelleHeight, PLANT_DETAIL.windNacelleWidth),
+          material,
+        );
+        nacelle.position.set(x, BASE_HEIGHT + 3.1, z);
+        group.add(nacelle);
       }
       break;
   }
@@ -264,6 +373,16 @@ export class PowerPlant {
     // a separate "energized" gate.
     for (const pivot of this.windPivots) {
       pivot.rotation.x += WIND_TURBINE.bladeRotationRadPerSec * this.outputMultiplier * dt;
+    }
+
+    // Always-on "this thing is hot" glow, scaled by live output fraction — a solar/wind
+    // plant genuinely glows less at low output, not just a flat constant. Selection
+    // wins visually (same precedent as every other entity), routed through the existing
+    // bloom pass, not a new dynamic light.
+    if (!this.selected) {
+      const outputFraction = this.effectiveCapacityMW() / this.nameplateCapacityMW;
+      this.material.emissive.set(COLORS.keyLight);
+      this.material.emissiveIntensity = LOCAL_GLOW.nodeGlowIntensity * outputFraction;
     }
 
     if (!this.settled) {

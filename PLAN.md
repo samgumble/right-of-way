@@ -46,6 +46,7 @@ hand-written catenary function, not Rapier.
 | — | Camera rotation hotkey (out-of-roadmap) | **Done** — see below |
 | — | Plant/Substation/Neighborhood redesign — real purpose/win condition (out-of-roadmap) | **Done** — all 8 waves, see below |
 | — | "10x pass" — deepening Plants/Neighborhoods/N-1 + graphics/animation polish (out-of-roadmap) | **Done** — all 11 waves, see below |
+| — | "10x models & graphics" — richer entity geometry, terrain dressing, rendering depth (out-of-roadmap) | **Done** — all 7 waves, see below |
 | 6 | Stretch: procedural regions, rival AI utility | Not started (audio and upgrade branching were pulled into the 10x expansion; procedural regions/rival AI remain open stretch goals) |
 
 ## Phase 1 scope (delivered)
@@ -426,38 +427,50 @@ open, matching every other hotkey.
 
 ## Up next
 
-**Both the plant/neighborhood/N-1 "real purpose" redesign (8 waves) and the follow-up
-"10x pass" deepening it (11 more waves) are now fully delivered.** The game has a real,
-industry-grounded win condition — connect a Power Plant to a Neighborhood through a real
-transmission/distribution network, hold N-1 redundancy, complete a milestone, with a new
-one always waiting after — and that system now has real depth on top: multiple
-concurrent milestones as you progress, a daily demand cycle, generation variability
-(solar/wind output that actually moves), a running fuel cost for dispatchable plants,
-Substation upgrade tiers, and a matching graphics/animation pass (spinning wind turbines,
-a bigger milestone payoff, an escalated blackout cue, lit Neighborhood windows). Final
-plans live at `/Users/samgumble/.claude/plans/fancy-wandering-dawn.md` (both the
-original 8-wave design and the 10x pass, in that order in the same file); wave-by-wave
-delivery detail is below and in HANDOVER.md's matching "architecture additions"
-subsections.
+**Three consecutive passes are now fully delivered**: the plant/neighborhood/N-1 "real
+purpose" redesign (8 waves), the follow-up "10x pass" deepening it (11 more waves), and
+now a "10x models & graphics" pass (7 more waves) going deeper on entity geometry,
+terrain dressing, and rendering depth. The game has a real, industry-grounded win
+condition — connect a Power Plant to a Neighborhood through a real transmission/
+distribution network, hold N-1 redundancy, complete a milestone, with a new one always
+waiting after — with real mechanical depth (concurrent milestones, daily demand cycling,
+generation variability, fuel cost, Substation tiers) and now real visual depth too:
+denser, more detailed low-poly silhouettes for every entity type, sparse deterministic
+terrain dressing (trees/rocks), a color-grade pass, dusk sun coloring, and an
+emissive-based "this thing has power" glow. Final plans live at
+`/Users/samgumble/.claude/plans/fancy-wandering-dawn.md` (all three plans, in delivery
+order, in the same file); wave-by-wave delivery detail is below and in HANDOVER.md's
+matching "architecture additions" subsections.
 
-Real bugs were caught and fixed during required verification across both passes, not
-left for later: an N-1 redundancy edge case and a markdown paragraph-merging gap (both
-in the original 8-wave redesign, see those sections) plus, this pass, a genuinely
-load-bearing discovery about this project's own *test methodology* — see the 10x pass's
-Wave 4 section for the `beforeunload`-triggered autosave race that was silently defeating
-`localStorage.clear()`-based test resets, and how it's now reliably avoided.
+Real issues were caught and fixed (or, in one case, deliberately *not* fixed and flagged
+instead) during required verification across all three passes: an N-1 redundancy edge
+case and a markdown paragraph-merging gap (the original 8-wave redesign), a
+`beforeunload`-triggered autosave race that was silently defeating
+`localStorage.clear()`-based test resets (the 10x pass), and — this pass — a genuine
+**pre-existing bug found during the explicit bloom-review checkpoint**: `Game.ts`'s
+`UnrealBloomPass` constructor call passes `BLOOM.threshold` and `BLOOM.radius` in the
+wrong order relative to the library's actual `(resolution, strength, radius, threshold)`
+signature (confirmed against the installed package's own source), meaning the game has
+been running with `radius`/`threshold` swapped since Phase 4 — more bloom spread (radius
+0.4 instead of the intended 0.2) and a lower luminance cutoff (threshold 0.2 instead of
+0.4) than the constant names describe. **Deliberately left unfixed and flagged here
+rather than silently corrected**: the game's entire visual identity has been eyeballed
+and tuned against this exact (buggy) behavior for its whole life, across every prior
+wave's "confirm bloom looks reasonable" screenshot check — swapping it now would be a
+real, unreviewed shift in overall look, not a small fix, and deserves an explicit
+decision rather than a silent one bundled into an unrelated wave's diff.
 
-The same "real playtest before adding more" recommendation still applies, now more than
-ever. This 10x pass explicitly acknowledged that trade-off going in (see the plan file's
-own "Explicitly acknowledged trade-off" note) and proceeded anyway per direct
-instruction — the tuning-constant surface has grown substantially again (every `PLANT`/
-`NEIGHBORHOOD`/`SUBSTATION`/`MILESTONE_PULSE`/`BLACKOUT_PULSE`/`WIND_TURBINE` constant
-from this pass, on top of everything already listed for the original redesign), all
-verified *correct* via direct state inspection and formula matching, none yet validated
-as *fun* by an actual human playing continuously. Phase 6's original stretch goals
-(procedural regions, a rival AI utility) remain open-ended and not currently scoped. See
-HANDOVER.md's "Known gaps" section for the full, honest list — a real playtest remains
-unambiguously the highest-leverage next step, more than any single additional feature.
+The same "real playtest before adding more" recommendation still applies, now even more
+so — this is the third consecutive large body of work shipped without one. Every new
+tuning constant across this pass (`GRADE`, `LOCAL_GLOW`, `TOWER_DETAIL`, `PLANT_DETAIL`,
+`SUBSTATION_DETAIL`, `NEIGHBORHOOD_DETAIL`, `ENVIRONMENT_DRESSING`, `SPAN_DETAIL`) is
+verified *correct* — exact primitive/mesh counts, exact formula matches, a real
+click-through regression proving tree/rock dressing never blocks tower placement — but,
+same as everything before it, none of it is validated as *good-looking in continuous
+play* by an actual human. Phase 6's original stretch goals (procedural regions, a rival
+AI utility) remain open-ended and not currently scoped. See HANDOVER.md's "Known gaps"
+section for the full, honest list — a real playtest remains unambiguously the
+highest-leverage next step, more than any single additional feature.
 
 ## Plant/Neighborhood/Substation redesign — Wave 1 (delivered)
 
@@ -848,3 +861,122 @@ not just eyeballed; the storm softlock-prevention invariant re-confirmed untouch
 every storm-adjacent wave (1, 5, 7) by diffing the session's changes against
 `triggerStorm`/`minEnergizedSpansToStrike`/candidate-selection code, none of which this
 pass touched.
+
+## "10x models & graphics" pass (delivered — all 7 waves)
+
+Not a numbered roadmap phase — after the mechanics/graphics-polish pass above shipped,
+the user asked to "10x the models and graphics." An `AskUserQuestion` round confirmed
+the direction as a combined pass across richer entity geometry, new environmental/
+terrain dressing, and deeper rendering/lighting ("all three, balanced"). A dedicated
+Explore pass first cataloged the actual current-state geometry/terrain/rendering
+pipeline (every entity was genuinely thin — Tower 3-15 primitives, each PowerPlant fuel
+silhouette 1-7, Substation a pad + 3 tanks, Neighborhood a box + cone + 2 windows per
+house — and the board had zero environmental dressing beyond 3 tinted terrain-patch
+types). A background Plan agent then designed a detailed 8-wave implementation against
+that inventory; this plan synthesized it into 7 waves, resolved its own flagged open
+questions, and made one deliberate architecture simplification — see HANDOVER.md's
+matching section and the plan file's own "Context" for the full reasoning, including two
+of the agent's risk claims independently verified against real source before finalizing
+(tree/rock raycast-safety, confirmed simpler than the agent proposed; the selection-
+highlight regression risk from splitting materials, resolved by design rather than left
+as a "verify later" item).
+
+1. **Rendering depth.** A new hand-rolled `GradeShader.ts` (restrained split-tone —
+   cool shadows, warm highlights, both drawn from existing palette colors) inserted into
+   the composer chain between `OutputPass` and the existing vignette pass. A dusk-only
+   sun color shift (`ATMOSPHERE.duskKeyColorHex`, peaking exactly at the day/night
+   crossover via a `duskFactor`, verified to return `fff1de` at noon/midnight and
+   `ffb066` at both crossover points exactly). An emissive-based "this thing has power"
+   glow for Tower/Substation (on when at least one connected span is energized) and
+   PowerPlant (always on, scaled by live output fraction) — **deliberately not real
+   `THREE.PointLight`s**, per the plan's own risk assessment (dynamic lights are
+   expensive per-mesh-per-light in a forward renderer, and this environment can't verify
+   frame-rate impact) — routed entirely through the existing bloom pass instead, the
+   same idiom `Neighborhood`'s own "served" glow already used successfully. Verified via
+   a real pixel-readback comparison (grade on/off genuinely produces different rendered
+   pixels), the glow toggling correctly through the real `recomputeNetworkState()` path
+   (not just direct calls), and selection correctly still winning visually over the glow.
+2. **Material variety.** Per-entity `roughness`/`metalness` retuning so Tower/
+   Substation/PowerPlant/Neighborhood stop reading as one uniform "steel" finish — a
+   real, distinct concrete-pad material for Tower/Substation (always neutral, never
+   selection-highlighted, matching real inspection practice), a second Neighborhood roof
+   material kept in exact color/emissive lockstep with the body via a new
+   `stateMaterials` array. The one real regression risk this wave introduced
+   (Tower/Substation's `setSelected()` only ever mutated one shared material) was
+   resolved by design, not left to verification: the pad simply never highlights,
+   confirmed via a direct selection test showing the structural material turns orange
+   while the pad stays neutral, exactly as intended.
+3. **Tower geometry depth.** Diagonal X cross-bracing (tier-scaled 2/3/4, pure
+   structural silhouette — deliberately not capacity-encoding, unlike arm/insulator
+   count, which already owns that signal) at 4 fixed height slots comfortably below the
+   lowest possible arm across every tier/branch (verified: highest brace at world y=1.71,
+   lowest arm at y=2.16, a 0.45-unit clear margin). 4 corner footing piers replace the
+   single base-pad box. Short insulator "jumper" stubs at every insulator, base and
+   tier-added alike. Verified exact primitive counts at every tier/branch combination
+   (tier 1: 15 meshes/4 braces/4 footings/2 jumpers; tier 2: 22/6/4/4; tier 3 Capacity:
+   33/8/4/8; tier 3 Resilience: 30/8/4/6 — Resilience's second arm has 0 insulators, so
+   fewer jumpers, exactly as its own existing design already implies).
+4. **PowerPlant fuel-silhouette depth.** Each of the 6 `addFuelDetail` cases gained
+   2-4 more primitives of real per-fuel detail (stack collars, a nameplate-capacity-
+   scaled coal pile — the one clear decoration-as-data opportunity in this wave, gas
+   storage tanks, a second nuclear reactor-containment dome, dam support piers + a
+   spillway foam plane, solar mounting struts + an inverter box, wind nacelle housings).
+   Verified exact mesh counts per fuel type (coal 6, gas 5, nuclear 5, hydro 6, solar 10,
+   wind 10) and the coal-pile radius formula exactly
+   (`coalPileMaxRadius * (coal nameplate / nuclear nameplate)` = 0.54 for coal's real
+   numbers, confirmed to the exact float).
+5. **Substation & Neighborhood geometry depth.** Substation finally gets the fence
+   posts its own doc comment had promised since Wave 1 of the original redesign (8, one
+   ring around the pad perimeter), 2 ceramic bushings per tank (6 total, reusing
+   `insulatorGeo`), and radiator fins (9, 3 per tank) — all fixed regardless of tier,
+   pure polish, verified not to collide with the tier-2 nub row (nubs at y=1.75, fence
+   posts at y=0.3-0.7). Neighborhood gains a chimney and foundation strip per house (no
+   5th "community structure" — resolved against the agent's own flagged open question in
+   favor of staying at the project's established exact-4-houses/exact-8-windows
+   discipline). Verified exact mesh counts at both Substation tiers (30, then 32) and
+   Neighborhood (24 = 4 houses × 6 meshes each), plus confirmed the new geometry
+   correctly inherits the existing `stateMaterials`/served-glow lockstep with zero extra
+   wiring, since it reuses the same material instances rather than creating new ones.
+6. **Terrain/environment dressing.** The board had zero set-dressing beyond 3 terrain-
+   patch types before this wave. Sparse, deterministic tree clusters (flat/hill terrain,
+   hill-correlated density) and rock outcrops (hill only) via a new
+   `Grid.buildEnvironmentDressing()`, using two independent `hash01` seed channels (100+,
+   clear of every existing seed range in the codebase) so dressing density is separately
+   tunable from terrain-type boundaries. Deliberately excludes sky/cloud geometry (would
+   push the aesthetic toward "nature scene," away from the SCADA/blueprint identity).
+   **The one genuinely new-territory risk this wave carried — verified, not assumed**:
+   every raycast method in `Game.ts` was confirmed to target an explicit array of entity
+   groups or `grid.groundMesh` specifically, never `grid.group` as a whole, so dressing
+   meshes are automatically invisible to every raycast with zero extra exclusion code —
+   simpler than the background agent's own more cautious proposal (a `userData` tag or
+   `raycast: () => {}` override). Confirmed in practice, not just by code inspection: a
+   real dispatched click at a tree-bearing node (grid 11,11) correctly placed a tower
+   there. Deterministic placement re-derived independently and cross-checked against the
+   live instance counts (21 trees, 4 rocks) — exact match, and confirmed zero placement
+   on water/marsh, all rocks on hill terrain only.
+7. **Span hardware detail, final polish & regression.** A "dead-end clamp" stub at each
+   span endpoint (`Span.addEndClamp`), reusing the span's own live material reference
+   directly — verified the clamp's color automatically tracks fault-red state with zero
+   separate wiring, and that clamp geometry doesn't interfere with click-to-repair
+   raycasting (a real dispatched click on a faulted span midpoint still triggered a
+   repair correctly). A deliberate bloom re-review against the new, denser scene — this
+   is where the pre-existing `UnrealBloomPass` parameter-order bug (see "Up next" above)
+   was found; explicitly not corrected as part of this wave. Full regression pass: a
+   comprehensive save (tier-3 Resilience tower, tier-2 Substation, a real span) round-
+   tripped through reload with mesh counts matching the exact tier-specific numbers
+   confirmed in Waves 3/5 (30 and 32 respectively) — no new persisted fields needed
+   anywhere in this entire 7-wave pass, since every addition reconstructs from existing
+   tier/branch/fuelType state. 300 forced storm attempts against a single-energized-span
+   topology produced zero strikes, re-confirming the softlock invariant — expected, since
+   a `git diff` of `Game.ts` against `triggerStorm`/`minEnergizedSpansToStrike`/
+   candidate-selection code showed zero overlap with anything this pass touched.
+   `GUIDE.md` needed no changes (purely visual, no new player-facing mechanic or
+   hotkey).
+
+Verified per-wave as listed above, plus: `tsc --noEmit` clean after every wave; every
+new geometry addition confirmed via exact scene-traversal mesh/instance counts, not
+eyeballed; the one genuinely new-territory risk (terrain dressing raycast-safety)
+confirmed via a real dispatched click, not just code inspection; the storm softlock
+invariant re-confirmed via 300 forced attempts; zero new persisted fields across the
+entire pass, confirmed via a full save/reload round-trip with exact mesh-count
+preservation.

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { COLORS, GRID, TERRAIN } from './constants';
+import { COLORS, ENVIRONMENT_DRESSING, GRID, TERRAIN } from './constants';
 
 export interface GridNode {
   i: number;
@@ -67,6 +67,7 @@ export class Grid {
     this.group.add(this.groundMesh);
 
     this.buildTerrainPatches();
+    this.buildEnvironmentDressing();
 
     const gridHelper = new THREE.GridHelper(
       this.half * 2,
@@ -135,6 +136,98 @@ export class Grid {
       marshMesh.receiveShadow = true;
       this.group.add(marshMesh);
     }
+  }
+
+  /** Sparse, deterministic tree/rock placement — same `hash01`/no-seed precedent as
+   * terrain patches, so dressing never needs persistence (regenerates identically every
+   * load). Uses `hash01` seed channels 100+ (terrain patches already use 1-5, and
+   * `Neighborhood`'s own house jitter uses its own small range) so nothing collides.
+   * Trees never never place on water/marsh; rocks are hill-only. Every raycast method
+   * in `Game.ts` targets an explicit array of entity groups or `grid.groundMesh`
+   * specifically — never `grid.group` as a whole — so dressing meshes added here as
+   * `grid.group` siblings are automatically invisible to every raycast in the game,
+   * with zero extra exclusion code needed. */
+  private buildEnvironmentDressing(): void {
+    const treeNodes: GridNode[] = [];
+    const rockNodes: GridNode[] = [];
+    for (let i = 0; i <= GRID.cells; i++) {
+      for (let j = 0; j <= GRID.cells; j++) {
+        const terrain = this.terrainAt(i, j);
+        if (terrain === 'water' || terrain === 'marsh') continue;
+        const treeChance =
+          ENVIRONMENT_DRESSING.treeChance * (terrain === 'hill' ? ENVIRONMENT_DRESSING.treeChanceHillMultiplier : 1);
+        if (hash01(i, j, 100) < treeChance) treeNodes.push({ i, j, world: this.nodeToWorld(i, j) });
+        if (terrain === 'hill' && hash01(i, j, 101) < ENVIRONMENT_DRESSING.rockChance) {
+          rockNodes.push({ i, j, world: this.nodeToWorld(i, j) });
+        }
+      }
+    }
+    if (treeNodes.length) this.buildTrees(treeNodes);
+    if (rockNodes.length) this.buildRocks(rockNodes);
+  }
+
+  private buildTrees(nodes: GridNode[]): void {
+    const trunkGeo = new THREE.CylinderGeometry(
+      ENVIRONMENT_DRESSING.trunkRadius,
+      ENVIRONMENT_DRESSING.trunkRadius * 1.3,
+      ENVIRONMENT_DRESSING.trunkHeight,
+      5,
+    );
+    const canopyGeo = new THREE.ConeGeometry(ENVIRONMENT_DRESSING.canopyRadius, ENVIRONMENT_DRESSING.canopyHeight, 6);
+    const trunkMat = new THREE.MeshStandardMaterial({ color: COLORS.steelBlueDim, roughness: 0.9, metalness: 0 });
+    const canopyMat = new THREE.MeshStandardMaterial({ color: COLORS.hillTint, roughness: 0.85, metalness: 0 });
+
+    const trunkMesh = new THREE.InstancedMesh(trunkGeo, trunkMat, nodes.length);
+    const canopyMesh = new THREE.InstancedMesh(canopyGeo, canopyMat, nodes.length);
+    trunkMesh.castShadow = true;
+    canopyMesh.castShadow = true;
+
+    const upAxis = new THREE.Vector3(0, 1, 0);
+    nodes.forEach((n, idx) => {
+      const offsetX = (hash01(n.i, n.j, 110) - 0.5) * GRID.cellSize * 0.5;
+      const offsetZ = (hash01(n.i, n.j, 111) - 0.5) * GRID.cellSize * 0.5;
+      const scale = 0.75 + hash01(n.i, n.j, 112) * 0.5;
+      const spin = hash01(n.i, n.j, 113) * Math.PI * 2;
+      const quat = new THREE.Quaternion().setFromAxisAngle(upAxis, spin);
+      const scaleVec = new THREE.Vector3(scale, scale, scale);
+      const worldX = n.world.x + offsetX;
+      const worldZ = n.world.z + offsetZ;
+
+      const trunkY = (ENVIRONMENT_DRESSING.trunkHeight * scale) / 2;
+      trunkMesh.setMatrixAt(idx, new THREE.Matrix4().compose(new THREE.Vector3(worldX, trunkY, worldZ), quat, scaleVec));
+
+      const canopyY = ENVIRONMENT_DRESSING.trunkHeight * scale + (ENVIRONMENT_DRESSING.canopyHeight * scale) / 2 - 0.05;
+      canopyMesh.setMatrixAt(idx, new THREE.Matrix4().compose(new THREE.Vector3(worldX, canopyY, worldZ), quat, scaleVec));
+    });
+
+    this.group.add(trunkMesh);
+    this.group.add(canopyMesh);
+  }
+
+  private buildRocks(nodes: GridNode[]): void {
+    const rockMat = new THREE.MeshStandardMaterial({ color: COLORS.hillTint, roughness: 0.95, metalness: 0.05 });
+    const [minCount, maxCount] = ENVIRONMENT_DRESSING.rockClusterSize;
+    const upAxis = new THREE.Vector3(0, 1, 0);
+    const instances: THREE.Matrix4[] = [];
+    for (const n of nodes) {
+      const count = minCount + Math.floor(hash01(n.i, n.j, 120) * (maxCount - minCount + 1));
+      for (let k = 0; k < count; k++) {
+        const offsetX = (hash01(n.i, n.j, 130 + k) - 0.5) * GRID.cellSize * 0.5;
+        const offsetZ = (hash01(n.i, n.j, 140 + k) - 0.5) * GRID.cellSize * 0.5;
+        const scale = 0.15 + hash01(n.i, n.j, 150 + k) * 0.15;
+        const spin = hash01(n.i, n.j, 160 + k) * Math.PI * 2;
+        const quat = new THREE.Quaternion().setFromAxisAngle(upAxis, spin);
+        const pos = new THREE.Vector3(n.world.x + offsetX, scale / 2, n.world.z + offsetZ);
+        instances.push(new THREE.Matrix4().compose(pos, quat, new THREE.Vector3(scale, scale, scale)));
+      }
+    }
+    if (!instances.length) return;
+    const rockGeo = new THREE.BoxGeometry(1, 1, 1);
+    const rockMesh = new THREE.InstancedMesh(rockGeo, rockMat, instances.length);
+    instances.forEach((m, idx) => rockMesh.setMatrixAt(idx, m));
+    rockMesh.castShadow = true;
+    rockMesh.receiveShadow = true;
+    this.group.add(rockMesh);
   }
 
   terrainAt(i: number, j: number): Terrain {

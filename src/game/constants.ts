@@ -184,6 +184,11 @@ export const ATMOSPHERE = {
   nightKeyIntensity: 0.18,
   vignetteOffset: 0.9,
   vignetteDarkness: 0.55,
+  /** Warm amber sun tint used only near the day/night crossover (see
+   * `Game.updateAtmosphere`'s `duskFactor`) — a three-point color lerp on top of the
+   * existing two-point intensity lerp, so dawn/dusk reads as a distinct warm moment
+   * rather than just a dimmer version of the same daytime hue. */
+  duskKeyColorHex: 0xffb066,
 } as const;
 
 export const SHADOW = {
@@ -236,6 +241,120 @@ export const BLOOM = {
   strength: 0.55,
   threshold: 0.4,
   radius: 0.2,
+} as const;
+
+/** Restrained split-tone grade, layered on top of bloom/vignette — see `GradeShader.ts`.
+ * Cool shadows, warm highlights, both drawn from colors already in the palette. */
+export const GRADE = {
+  strength: 0.18,
+} as const;
+
+/** Emissive-boost "this thing has power" cue for Tower/Substation (on when at least one
+ * connected span is energized) and PowerPlant (always on, scaled by live output) —
+ * routed entirely through the existing `emissiveIntensity` + `UnrealBloomPass` pipeline,
+ * deliberately not a new `THREE.PointLight` (real dynamic lights are expensive per-mesh
+ * per-light in a forward renderer, and this environment can't verify frame-rate impact —
+ * see PLAN.md's "10x models & graphics" context for the full reasoning). Same idiom
+ * `Neighborhood`'s own "served" glow already uses. */
+export const LOCAL_GLOW = {
+  nodeGlowIntensity: 0.3,
+} as const;
+
+export const TOWER_DETAIL = {
+  /** Diagonal X cross-bracing — pure structural silhouette, deliberately *not*
+   * capacity-encoding (unlike arm/insulator count, which already owns that signal).
+   * Cumulative total by tier (tier 1: 2, tier 2: 3, tier 3: 4). `braceHeightFracs` are
+   * 4 fixed y-fraction slots, indexed directly rather than recomputed from a live
+   * total — so a later tier's addition can never reposition an earlier tier's
+   * already-placed brace (same "each tier gets its own row" discipline as
+   * Substation's tier-nub system). All 4 slots sit comfortably below the lowest
+   * possible arm height across every tier/branch (tier-3 Resilience's second arm sits
+   * at `0.24 * height`). */
+  braceCountByTier: [2, 3, 4] as const,
+  braceHeightFracs: [0.07, 0.13, 0.16, 0.19] as const,
+  braceHalfSpan: 0.35,
+  braceHalfWidth: 0.45,
+  braceThickness: 0.045,
+  /** 4 corner footing piers replace the single base-pad box — a real lattice tower
+   * sits on separate footings per leg, not one monolithic slab. */
+  footingSize: 0.22,
+  footingHeight: 0.35,
+  footingOffset: 0.38,
+  /** Short hardware stub hanging just below every insulator nub — reads as a real
+   * connection point rather than a bare cylinder with nothing attached. */
+  jumperRadius: 0.02,
+  jumperLength: 0.12,
+} as const;
+
+export const PLANT_DETAIL = {
+  /** Coal's fuel stockpile — the one clear decoration-as-data opportunity in this wave.
+   * Scaled by nameplate capacity relative to nuclear's (the largest in
+   * `PLANT.fuelSpecs`), so a real fuel pile visibly reflects real plant scale. */
+  coalPileMaxRadius: 0.9,
+  stackCollarRadius: 0.5,
+  stackCollarHeight: 0.18,
+  gasTankRadius: 0.28,
+  gasTankHeight: 0.9,
+  nuclearDomeRadius: 0.55,
+  hydroPierWidth: 0.25,
+  hydroPierHeight: 0.9,
+  solarStrutLength: 1.3,
+  solarInverterSize: 0.35,
+  windNacelleWidth: 0.4,
+  windNacelleHeight: 0.22,
+} as const;
+
+export const SUBSTATION_DETAIL = {
+  /** Finally delivers on `Substation`'s own existing doc comment ("a fenced
+   * utility-yard silhouette") — no fence existed until this wave. */
+  fencePostCount: 8,
+  fencePostRadius: 0.03,
+  fencePostHeight: 0.4,
+  /** Ceramic bushings atop each tank — real hardware detail, distinct from the
+   * fence-line insulator nubs that already encode tier capacity; these are fixed
+   * (2 per tank, every tier), pure polish. */
+  bushingsPerTank: 2,
+  finWidth: 0.05,
+  finHeight: 0.5,
+  finDepth: 0.12,
+} as const;
+
+export const NEIGHBORHOOD_DETAIL = {
+  chimneyRadius: 0.06,
+  chimneyHeight: 0.25,
+  foundationOverhang: 0.06,
+  foundationHeight: 0.08,
+} as const;
+
+/** Sparse, deterministic set-dressing — the board had zero environmental detail beyond
+ * the 3 tinted terrain-patch types before this wave. Two *independent* hash channels
+ * (not `terrainNoise`'s own hill/water/marsh thresholds), so tree/rock density is
+ * separately tunable from terrain-type boundaries. Deliberately sparse ("scattered
+ * utility-corridor vegetation," not a forest) and geometry-only (box/cylinder/cone
+ * primitives, same vocabulary as every other entity in this game) — sky/cloud geometry
+ * is explicitly out of scope, since it would push the aesthetic toward "nature scene,"
+ * away from the SCADA/blueprint identity. */
+export const ENVIRONMENT_DRESSING = {
+  treeChance: 0.045,
+  /** Hills get correlated extra vegetation density — trees cluster more on hills,
+   * matching real vegetation patterns. */
+  treeChanceHillMultiplier: 2.2,
+  rockChance: 0.03,
+  trunkHeight: 0.5,
+  trunkRadius: 0.05,
+  canopyRadius: 0.35,
+  canopyHeight: 0.55,
+  rockClusterSize: [2, 4] as const,
+} as const;
+
+/** A short "dead-end clamp" stub at each span endpoint — real hardware detail (the
+ * cable's actual connection point), sequenced last since it's tuned to line up against
+ * the tower/substation insulator geometry Waves 3/5 finalized. Reuses the span's own
+ * live phase-color material, so the clamp automatically tracks fault/energize state
+ * exactly like the tube itself, no separate wiring needed. */
+export const SPAN_DETAIL = {
+  clampRadius: 0.06,
+  clampLength: 0.22,
 } as const;
 
 export const MILESTONE_PULSE = {

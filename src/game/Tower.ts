@@ -1,13 +1,55 @@
 import * as THREE from 'three';
-import { COLORS, DENY_SHAKE_DURATION_MS, ECONOMY } from './constants';
+import { COLORS, DENY_SHAKE_DURATION_MS, ECONOMY, LOCAL_GLOW, TOWER_DETAIL } from './constants';
 import { denyShakeOffset, easeOutBack } from './feedback';
 import { insulatorGeo } from './sharedGeometry';
 
 export type TowerEvent = 'permitCleared';
 export type TowerBranch = 'capacity' | 'resilience';
 
-/** Shared low-poly lattice-tower geometry, reused by real towers and the hover ghost. */
-export function buildTowerVisual(material: THREE.Material, height: number): THREE.Group {
+/** A short hardware stub hanging just below an insulator nub — reads as a real
+ * connection point rather than a bare cylinder with nothing attached. Added alongside
+ * every insulator this project creates (both the base build below and each tier's
+ * `addArm`), so the detail is consistent regardless of tier. */
+function addJumper(group: THREE.Group, material: THREE.Material, x: number, y: number): void {
+  const jumper = new THREE.Mesh(new THREE.CylinderGeometry(TOWER_DETAIL.jumperRadius, TOWER_DETAIL.jumperRadius, TOWER_DETAIL.jumperLength, 5), material);
+  jumper.position.set(x, y - 0.17 - TOWER_DETAIL.jumperLength / 2, 0);
+  jumper.castShadow = true;
+  group.add(jumper);
+}
+
+/** One diagonal X cross-brace (two mirrored thin boxes) at a fixed `heightFrac` of the
+ * tower's height — pure structural silhouette, deliberately not capacity-encoding
+ * (unlike arm/insulator count). `heightFrac` is always one of
+ * `TOWER_DETAIL.braceHeightFracs`' 4 fixed slots, indexed directly rather than
+ * recomputed from a live total — so a later tier's addition can never reposition an
+ * earlier tier's already-placed brace (same "each tier gets its own row" discipline as
+ * Substation's tier-nub system). All 4 slots sit comfortably below the lowest possible
+ * arm height across every tier/branch (tier-3 Resilience's second arm sits at
+ * `0.24 * height`). */
+function addXBrace(group: THREE.Group, material: THREE.Material, height: number, heightFrac: number): void {
+  const y = height * heightFrac;
+  const dy = TOWER_DETAIL.braceHalfSpan * 2;
+  const dx = TOWER_DETAIL.braceHalfWidth * 2;
+  const braceLength = Math.sqrt(dx * dx + dy * dy);
+  const angle = Math.atan2(dy, dx);
+  for (const mirror of [1, -1]) {
+    const brace = new THREE.Mesh(
+      new THREE.BoxGeometry(braceLength, TOWER_DETAIL.braceThickness, TOWER_DETAIL.braceThickness),
+      material,
+    );
+    brace.position.set(0, y, 0);
+    brace.rotation.z = mirror * angle;
+    brace.castShadow = true;
+    group.add(brace);
+  }
+}
+
+/** Shared low-poly lattice-tower geometry, reused by real towers and the hover ghost.
+ * `padMaterial` defaults to `material` (the ghost preview stays a single translucent
+ * material, no pad/shaft distinction needed for a hover state) — a real `Tower` passes
+ * its own separate, always-neutral concrete-pad material so selection highlighting
+ * never touches it (see `Tower`'s own comment on `padMaterial`). */
+export function buildTowerVisual(material: THREE.Material, height: number, padMaterial: THREE.Material = material): THREE.Group {
   const group = new THREE.Group();
 
   const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.5, height, 6), material);
@@ -20,18 +62,34 @@ export function buildTowerVisual(material: THREE.Material, height: number): THRE
 
   // Insulator strings at the arm tips, where the conductor actually attaches.
   for (const side of [-1, 1]) {
+    const insulatorY = height * 0.86 - 0.2;
     const insulator = new THREE.Mesh(insulatorGeo, material);
-    insulator.position.set(side * 1.04, height * 0.86 - 0.2, 0);
+    insulator.position.set(side * 1.04, insulatorY, 0);
     group.add(insulator);
+    addJumper(group, material, side * 1.04, insulatorY);
   }
 
   const armLower = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.14, 0.14), material);
   armLower.position.y = height * 0.68;
   group.add(armLower);
 
-  const base = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.25, 1.1), material);
-  base.position.y = 0.125;
-  group.add(base);
+  // Tier 1's base 2 X-braces (slots 0-1) — later tiers add slots 2-3 via
+  // `Tower.addBracingForTier`, never touching these.
+  addXBrace(group, material, height, TOWER_DETAIL.braceHeightFracs[0]);
+  addXBrace(group, material, height, TOWER_DETAIL.braceHeightFracs[1]);
+
+  // 4 corner footing piers, not one monolithic slab — a real lattice tower sits on
+  // separate footings per leg.
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      const footing = new THREE.Mesh(
+        new THREE.BoxGeometry(TOWER_DETAIL.footingSize, TOWER_DETAIL.footingHeight, TOWER_DETAIL.footingSize),
+        padMaterial,
+      );
+      footing.position.set(sx * TOWER_DETAIL.footingOffset, TOWER_DETAIL.footingHeight / 2, sz * TOWER_DETAIL.footingOffset);
+      group.add(footing);
+    }
+  }
 
   return group;
 }
@@ -75,6 +133,10 @@ export class Tower {
   readonly topPos: THREE.Vector3;
 
   private readonly material: THREE.MeshStandardMaterial;
+  /** Separate, always-neutral concrete-footing material — never touched by
+   * `setSelected()`/the energized glow, matching real inspection practice (you
+   * wouldn't highlight a footing when calling out the structure above it). */
+  private readonly padMaterial: THREE.MeshStandardMaterial;
   private readonly basePos: THREE.Vector3;
   private readonly height: number;
   private selected = false;
@@ -88,6 +150,10 @@ export class Tower {
   private upgradePulseStart: number | null = null;
   private permitClearAt: number | null = null;
   private activationPulseStart: number | null = null;
+  /** Set by `Game.recomputeNetworkState()` — true iff at least one span connected to
+   * this tower is currently energized. Purely a "this thing has power" glow cue, read
+   * every `update()` frame; never an independent trigger of its own. */
+  private energized = false;
 
   constructor(gridI: number, gridJ: number, worldPos: THREE.Vector3, height: number, pendingDurationMs = 0) {
     this.gridI = gridI;
@@ -101,11 +167,19 @@ export class Tower {
       emissiveIntensity: 0,
       transparent: true,
       opacity: 1,
-      roughness: 0.5,
-      metalness: 0.4,
+      roughness: 0.35,
+      metalness: 0.65,
     });
 
-    this.group = buildTowerVisual(this.material, height);
+    this.padMaterial = new THREE.MeshStandardMaterial({
+      color: COLORS.steelBlueDim,
+      roughness: 0.9,
+      metalness: 0.05,
+      transparent: true,
+      opacity: 1,
+    });
+
+    this.group = buildTowerVisual(this.material, height, this.padMaterial);
     this.group.position.copy(this.basePos);
     this.group.scale.setScalar(0.001);
     this.group.userData.isTower = true;
@@ -129,6 +203,13 @@ export class Tower {
 
   isSelected(): boolean {
     return this.selected;
+  }
+
+  /** Boosts `emissiveIntensity` toward `LOCAL_GLOW.nodeGlowIntensity` while idle
+   * (applied every `update()` frame, not written directly here) — routed entirely
+   * through the existing bloom pass, deliberately not a new dynamic light. */
+  setEnergizedGlow(active: boolean): void {
+    this.energized = active;
   }
 
   getTier(): number {
@@ -182,10 +263,26 @@ export class Tower {
     const usableWidth = arm.width * 0.85;
     for (let i = 0; i < arm.insulatorCount; i++) {
       const t = arm.insulatorCount === 1 ? 0.5 : i / (arm.insulatorCount - 1);
+      const insulatorX = (t - 0.5) * usableWidth;
+      const insulatorY = this.height * arm.heightFrac - 0.2;
       const insulator = new THREE.Mesh(insulatorGeo, this.material);
-      insulator.position.set((t - 0.5) * usableWidth, this.height * arm.heightFrac - 0.2, 0);
+      insulator.position.set(insulatorX, insulatorY, 0);
       insulator.castShadow = true;
       this.group.add(insulator);
+      addJumper(this.group, this.material, insulatorX, insulatorY);
+    }
+  }
+
+  /** Diagonal X cross-bracing gained *reaching* the next tier — `tier` matches
+   * `addArmForTier`'s own "current tier before upgrading" convention. Slots 0-1 (tier
+   * 1's base 2 braces) are built directly in `buildTowerVisual`, never here. */
+  private addBracingForTier(tier: number): void {
+    if (tier === 1) {
+      addXBrace(this.group, this.material, this.height, TOWER_DETAIL.braceHeightFracs[2]);
+      return;
+    }
+    if (tier === 2) {
+      addXBrace(this.group, this.material, this.height, TOWER_DETAIL.braceHeightFracs[3]);
     }
   }
 
@@ -195,6 +292,7 @@ export class Tower {
   upgrade(branch?: TowerBranch): void {
     if (!this.canUpgrade()) return;
     this.addArmForTier(this.tier, this.tier === 2 ? branch : undefined);
+    this.addBracingForTier(this.tier);
     if (this.tier === 2 && branch) this.branch = branch;
     this.tier++;
     this.upgradePulseStart = performance.now();
@@ -206,13 +304,17 @@ export class Tower {
   materializeFromSave(tier: number, connections: number, pendingMs?: number, branch?: TowerBranch): void {
     this.settled = true;
     this.group.scale.setScalar(1);
-    for (let t = 1; t < tier; t++) this.addArmForTier(t, t === 2 ? branch : undefined);
+    for (let t = 1; t < tier; t++) {
+      this.addArmForTier(t, t === 2 ? branch : undefined);
+      this.addBracingForTier(t);
+    }
     this.tier = tier;
     this.branch = tier >= 3 ? (branch ?? null) : null;
     this.connections = connections;
     if (pendingMs && pendingMs > 0) {
       this.permitClearAt = performance.now() + pendingMs;
       this.material.opacity = 0.65;
+      this.padMaterial.opacity = 0.65;
     }
   }
 
@@ -275,11 +377,28 @@ export class Tower {
         this.permitClearAt = null;
         this.activationPulseStart = now;
         this.material.opacity = 1;
+        this.padMaterial.opacity = 1;
         event = 'permitCleared';
       } else {
         const cycle = (now % 1400) / 1400;
-        this.material.opacity = 0.45 + (0.5 + 0.5 * Math.sin(cycle * Math.PI * 2)) * 0.4;
+        const pendingOpacity = 0.45 + (0.5 + 0.5 * Math.sin(cycle * Math.PI * 2)) * 0.4;
+        this.material.opacity = pendingOpacity;
+        this.padMaterial.opacity = pendingOpacity;
       }
+    }
+
+    // Energized glow — only once every transient pulse (spawn/upgrade/activation/pending)
+    // has settled and selection isn't already claiming the emissive channel, matching
+    // the existing "selection wins visually" precedent.
+    if (
+      this.settled &&
+      !this.selected &&
+      this.upgradePulseStart === null &&
+      this.activationPulseStart === null &&
+      this.permitClearAt === null
+    ) {
+      this.material.emissive.set(this.energized ? COLORS.keyLight : 0x000000);
+      this.material.emissiveIntensity = this.energized ? LOCAL_GLOW.nodeGlowIntensity : 0;
     }
 
     this.group.position.copy(this.basePos);

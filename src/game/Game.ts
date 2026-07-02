@@ -5,7 +5,8 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { VignetteShader } from 'three/addons/shaders/VignetteShader.js';
-import { ATMOSPHERE, BLACKOUT_PULSE, BLOOM, COLORS, DENY_SHAKE_DURATION_MS, ECONOMY, GRID, MILESTONE_PULSE, NEIGHBORHOOD, NETWORK_RECOMPUTE, OBJECTIVE, PERMIT, PLANT, RAIN, SHADOW, STORM, SUBSTATION, TOWER_HEIGHT } from './constants';
+import { GradeShader } from './GradeShader';
+import { ATMOSPHERE, BLACKOUT_PULSE, BLOOM, COLORS, DENY_SHAKE_DURATION_MS, ECONOMY, GRADE, GRID, MILESTONE_PULSE, NEIGHBORHOOD, NETWORK_RECOMPUTE, OBJECTIVE, PERMIT, PLANT, RAIN, SHADOW, STORM, SUBSTATION, TOWER_HEIGHT } from './constants';
 import { Grid, type GridNode } from './Grid';
 import { Tower, buildTowerVisual, type TowerBranch } from './Tower';
 import { Span } from './Span';
@@ -124,6 +125,7 @@ export class Game {
   private readonly composer: EffectComposer;
   private readonly bloomPass: UnrealBloomPass;
   private readonly vignettePass: ShaderPass;
+  private readonly gradePass: ShaderPass;
   /** Set to `performance.now()` on milestone completion; `null` when no pulse is
    * active. Restarts rather than stacks if a second completion lands mid-pulse. */
   private milestonePulseStart: number | null = null;
@@ -142,6 +144,9 @@ export class Game {
   private readonly sunLight: THREE.DirectionalLight;
   private readonly dayAmbientColor = new THREE.Color(COLORS.ambientLight);
   private readonly nightAmbientColor = new THREE.Color(COLORS.steelBlueDim);
+  private readonly dayKeyColor = new THREE.Color(COLORS.keyLight);
+  private readonly duskKeyColor = new THREE.Color(ATMOSPHERE.duskKeyColorHex);
+  private readonly scratchSunColor = new THREE.Color();
 
   private readonly bursts: ParticleBurst[] = [];
   private readonly rainMesh: THREE.InstancedMesh;
@@ -224,6 +229,14 @@ export class Game {
     );
     this.composer.addPass(this.bloomPass);
     this.composer.addPass(new OutputPass());
+    // The grade pass also needs the final sRGB-encoded buffer (same reasoning as the
+    // vignette below), and runs *before* the vignette so corner-darkening isn't itself
+    // re-tinted by the grade.
+    this.gradePass = new ShaderPass(GradeShader);
+    this.gradePass.uniforms.shadowTint.value = new THREE.Color(COLORS.steelBlueDim);
+    this.gradePass.uniforms.highlightTint.value = new THREE.Color(COLORS.keyLight);
+    this.gradePass.uniforms.strength.value = GRADE.strength;
+    this.composer.addPass(this.gradePass);
     // Vignette must come after OutputPass: it mixes toward a plain SDR grey constant,
     // which needs to happen in the final sRGB-encoded buffer, not the linear HDR one
     // upstream — mixing in linear space made a near-black scene's corners read lighter
@@ -1156,6 +1169,14 @@ export class Game {
       dayFactor,
     );
     this.sunLight.intensity = THREE.MathUtils.lerp(ATMOSPHERE.nightKeyIntensity, ATMOSPHERE.dayKeyIntensity, dayFactor);
+
+    // Dusk-only sun color shift: peaks exactly at the day/night crossover (dayFactor
+    // near 0.5, where the intensity lerp is already swinging fastest) and returns to the
+    // plain daytime hue everywhere else — a three-point color lerp layered on top of the
+    // existing two-point intensity lerp, not a full day-to-night hue change.
+    const duskFactor = Math.max(0, 1 - Math.abs(dayFactor - 0.5) * 2);
+    this.scratchSunColor.copy(this.dayKeyColor).lerp(this.duskKeyColor, duskFactor);
+    this.sunLight.color.copy(this.scratchSunColor);
   }
 
   /** No-op unless `milestonePulseStart` is set (same idiom as every other one-shot
@@ -1473,6 +1494,22 @@ export class Game {
         this.spawnBurst(neighborhood.attachPos.clone().setY(0.3), 'blackout', now);
         this.blackoutPulseStart = now;
       }
+    }
+
+    // "This thing has power" glow (Wave 1 of the models/graphics pass) — a Tower/
+    // Substation glows iff at least one connected span is currently energized, across
+    // every span-bearing array that could touch it.
+    for (const tower of this.towers) {
+      const hasEnergizedLink =
+        this.spans.some((r) => (r.a === tower || r.b === tower) && r.span.isEnergized()) ||
+        this.transmissionLinks.some((r) => (r.a === tower || r.b === tower) && r.span.isEnergized());
+      tower.setEnergizedGlow(hasEnergizedLink);
+    }
+    for (const substation of this.substations) {
+      const hasEnergizedLink =
+        this.transmissionLinks.some((r) => (r.a === substation || r.b === substation) && r.span.isEnergized()) ||
+        this.distributionSpans.some((r) => r.substation === substation && r.span.isEnergized());
+      substation.setEnergizedGlow(hasEnergizedLink);
     }
   }
 

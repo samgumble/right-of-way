@@ -1,21 +1,45 @@
 import * as THREE from 'three';
-import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, NEIGHBORHOOD } from './constants';
+import { ATMOSPHERE, COLORS, DENY_SHAKE_DURATION_MS, NEIGHBORHOOD, NEIGHBORHOOD_DETAIL } from './constants';
 import { denyShakeOffset, easeOutBack } from './feedback';
 import { hash01 } from './Grid';
 
 const HOUSE_COUNT = 4;
 
-function buildHouse(material: THREE.Material, windowMaterial: THREE.Material, x: number, z: number, scale: number): THREE.Group {
+function buildHouse(
+  material: THREE.Material,
+  roofMaterial: THREE.Material,
+  windowMaterial: THREE.Material,
+  x: number,
+  z: number,
+  scale: number,
+): THREE.Group {
   const house = new THREE.Group();
 
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.9 * scale, 0.7 * scale, 0.9 * scale), material);
   body.position.set(x, 0.35 * scale, z);
   house.add(body);
 
-  const roof = new THREE.Mesh(new THREE.ConeGeometry(0.75 * scale, 0.55 * scale, 4), material);
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(0.75 * scale, 0.55 * scale, 4), roofMaterial);
   roof.position.set(x, 0.7 * scale + 0.275 * scale, z);
   roof.rotation.y = Math.PI / 4;
   house.add(roof);
+
+  // A chimney (roofMaterial — masonry-toned, not siding) and a foundation strip
+  // (material — the body sat directly on y=0 with no visible footing before this
+  // wave). Both stay in the same `stateMaterials` lockstep as the rest of the house.
+  const chimney = new THREE.Mesh(
+    new THREE.CylinderGeometry(NEIGHBORHOOD_DETAIL.chimneyRadius * scale, NEIGHBORHOOD_DETAIL.chimneyRadius * scale, NEIGHBORHOOD_DETAIL.chimneyHeight * scale, 6),
+    roofMaterial,
+  );
+  chimney.position.set(x + 0.25 * scale, 0.7 * scale + NEIGHBORHOOD_DETAIL.chimneyHeight * 0.5 * scale, z - 0.2 * scale);
+  house.add(chimney);
+
+  const foundation = new THREE.Mesh(
+    new THREE.BoxGeometry(0.9 * scale + NEIGHBORHOOD_DETAIL.foundationOverhang, NEIGHBORHOOD_DETAIL.foundationHeight, 0.9 * scale + NEIGHBORHOOD_DETAIL.foundationOverhang),
+    material,
+  );
+  foundation.position.set(x, NEIGHBORHOOD_DETAIL.foundationHeight / 2, z);
+  house.add(foundation);
 
   // Two windows per house (8 across the cluster) — a small, countable "visual
   // quantity," matching the project's own idiom. Flush against two adjacent body
@@ -41,6 +65,7 @@ function buildHouse(material: THREE.Material, windowMaterial: THREE.Material, x:
  * every time it's spawned at the same grid coordinates. */
 export function buildNeighborhoodVisual(
   material: THREE.Material,
+  roofMaterial: THREE.Material,
   windowMaterial: THREE.Material,
   gridI: number,
   gridJ: number,
@@ -52,7 +77,7 @@ export function buildNeighborhoodVisual(
     const scale = 0.85 + hash01(gridI, gridJ, n + 20) * 0.3;
     const x = Math.cos(angle) * radius;
     const z = Math.sin(angle) * radius;
-    group.add(buildHouse(material, windowMaterial, x, z, scale));
+    group.add(buildHouse(material, roofMaterial, windowMaterial, x, z, scale));
   }
   return group;
 }
@@ -75,6 +100,13 @@ export class Neighborhood {
   readonly id: string;
 
   private readonly material: THREE.MeshStandardMaterial;
+  /** Separate from `material` only in surface finish (a slight shingle sheen vs. wall
+   * siding) — always kept in color/emissive lockstep with `material` via
+   * `stateMaterials`, so served/blackout/selection state reads consistently across the
+   * whole house, not just the walls. */
+  private readonly roofMaterial: THREE.MeshStandardMaterial;
+  /** Every material whose color/emissive should track live state in lockstep. */
+  private readonly stateMaterials: THREE.MeshStandardMaterial[];
   /** Shared across all 8 window meshes in the cluster — still `keyLight`-toned (no new
    * hue), brightness driven by the cycled demand fraction in `update()`. */
   private readonly windowMaterial: THREE.MeshStandardMaterial;
@@ -123,9 +155,18 @@ export class Neighborhood {
       color: COLORS.steelBlueDim,
       emissive: new THREE.Color(0x000000),
       emissiveIntensity: 0,
-      roughness: 0.6,
-      metalness: 0.15,
+      roughness: 0.75,
+      metalness: 0.02,
     });
+
+    this.roofMaterial = new THREE.MeshStandardMaterial({
+      color: COLORS.steelBlueDim,
+      emissive: new THREE.Color(0x000000),
+      emissiveIntensity: 0,
+      roughness: 0.55,
+      metalness: 0,
+    });
+    this.stateMaterials = [this.material, this.roofMaterial];
 
     this.windowMaterial = new THREE.MeshStandardMaterial({
       color: COLORS.keyLight,
@@ -135,7 +176,7 @@ export class Neighborhood {
       metalness: 0.1,
     });
 
-    this.group = buildNeighborhoodVisual(this.material, this.windowMaterial, gridI, gridJ);
+    this.group = buildNeighborhoodVisual(this.material, this.roofMaterial, this.windowMaterial, gridI, gridJ);
     this.group.position.copy(this.basePos);
     this.group.scale.setScalar(0.001);
     this.group.userData.isNeighborhood = true;
@@ -202,8 +243,10 @@ export class Neighborhood {
   setSelected(selected: boolean): void {
     this.selected = selected;
     if (selected) {
-      this.material.emissive.set(COLORS.safetyOrange);
-      this.material.emissiveIntensity = 0.5;
+      for (const mat of this.stateMaterials) {
+        mat.emissive.set(COLORS.safetyOrange);
+        mat.emissiveIntensity = 0.5;
+      }
     }
     // Deselecting: no direct material write here — the next `update()` call (every
     // frame) restores the correct served/blackout look, same precedent as Tower's
@@ -266,21 +309,24 @@ export class Neighborhood {
     }
 
     // Selection (orange) wins visually over served/blackout state, same precedent as
-    // Tower's activation-pulse-vs-selection interaction.
+    // Tower's activation-pulse-vs-selection interaction. Applied to every material in
+    // `stateMaterials` (body + roof) so the whole house reads consistently, not just
+    // the walls.
     if (!this.selected) {
+      const applyState = (color: number, emissive: number, intensity: number): void => {
+        for (const mat of this.stateMaterials) {
+          mat.color.set(color);
+          mat.emissive.set(emissive);
+          mat.emissiveIntensity = intensity;
+        }
+      };
       if (this.blackedOut) {
         const cycle = (now % BLACKOUT_PULSE_PERIOD) / BLACKOUT_PULSE_PERIOD;
-        this.material.color.set(COLORS.faultRed);
-        this.material.emissive.set(COLORS.faultRed);
-        this.material.emissiveIntensity = 0.35 + (0.5 + 0.5 * Math.sin(cycle * Math.PI * 2)) * 0.55;
+        applyState(COLORS.faultRed, COLORS.faultRed, 0.35 + (0.5 + 0.5 * Math.sin(cycle * Math.PI * 2)) * 0.55);
       } else if (this.served) {
-        this.material.color.set(COLORS.steelBlueDim);
-        this.material.emissive.set(COLORS.keyLight);
-        this.material.emissiveIntensity = 0.35;
+        applyState(COLORS.steelBlueDim, COLORS.keyLight, 0.35);
       } else {
-        this.material.color.set(COLORS.steelBlueDim);
-        this.material.emissive.set(0x000000);
-        this.material.emissiveIntensity = 0;
+        applyState(COLORS.steelBlueDim, 0x000000, 0);
       }
     }
 
